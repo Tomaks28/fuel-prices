@@ -39,23 +39,16 @@ jobs:
       - run: npm run check
       - run: npm run build:verify
 
-      # Without a token semantic-release fails in verifyConditions, which would
-      # leave this workflow permanently red. Skip with a notice instead, and
-      # start releasing on its own the moment the secret is added.
-      - name: Check for an npm token
-        id: token
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -n "$NPM_TOKEN" ]; then
-            echo 'present=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'present=false' >> "$GITHUB_OUTPUT"
-            echo '::notice::NPM_TOKEN is not configured, skipping the release.'
-          fi
+      # Publishing is opt-in: set the RELEASE_ENABLED repository variable to
+      # "true" when the package is ready to ship. Gating on the variable rather
+      # than on NPM_TOKEN keeps trusted publishing viable, which authenticates
+      # over OIDC and needs no secret at all.
+      - name: Report that releasing is disabled
+        if: vars.RELEASE_ENABLED != 'true'
+        run: echo '::notice::RELEASE_ENABLED is not "true", skipping the release.'
 
       - name: Release
-        if: steps.token.outputs.present == 'true'
+        if: vars.RELEASE_ENABLED == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
