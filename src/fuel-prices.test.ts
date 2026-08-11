@@ -483,6 +483,86 @@ describe('the lookups it serves', () => {
     expect(await moving.getStationsByDepartment('35')).toHaveLength(2);
   });
 
+  describe('around a point', () => {
+    // Saint-Malo intra-muros, with the other stations at known distances from it.
+    const CENTER = { latitude: 48.64878, longitude: -2.02585 };
+    const nearby = new FuelPricesClient({
+      fetch: stubFetch(() => [
+        rawRecord(1, { ville: 'Saint-Malo', geom: { lat: 48.64878, lon: -2.02585 } }), // 0 m
+        rawRecord(2, { ville: 'Dinard', geom: { lat: 48.63194, lon: -2.05611 } }), // ~2.9 km
+        rawRecord(3, { ville: 'Rennes', geom: { lat: 48.1173, lon: -1.6778 } }), // ~66 km
+        rawRecord(4, { ville: 'Nulle part', geom: null }), // no coordinates
+      ]).fetch,
+    });
+
+    it('returns the stations inside the radius, nearest first', async () => {
+      const found = await nearby.getStationsNearby(CENTER, 5_000);
+
+      expect(found.map((hit) => hit.station.city)).toEqual(['Saint-Malo', 'Dinard']);
+      expect(found[0]?.distanceMeters).toBe(0);
+      expect(found[1]?.distanceMeters).toBeCloseTo(2906.848, 2);
+    });
+
+    it('widens with the radius', async () => {
+      expect(await nearby.getStationsNearby(CENTER, 0)).toHaveLength(1);
+      expect(await nearby.getStationsNearby(CENTER, 3_000)).toHaveLength(2);
+      expect(await nearby.getStationsNearby(CENTER, 100_000)).toHaveLength(3);
+    });
+
+    it('treats the radius as inclusive', async () => {
+      const exact = await nearby.getStationsNearby(CENTER, 2_906.849);
+      expect(exact).toHaveLength(2);
+
+      const justShort = await nearby.getStationsNearby(CENTER, 2_906.8);
+      expect(justShort).toHaveLength(1);
+    });
+
+    it('leaves out a station the dataset never located', async () => {
+      const found = await nearby.getStationsNearby(CENTER, 20_000_000);
+
+      expect(found).toHaveLength(3);
+      expect(found.map((hit) => hit.station.city)).not.toContain('Nulle part');
+    });
+
+    it('returns nothing around a point in the middle of nowhere', async () => {
+      expect(await nearby.getStationsNearby({ latitude: 0, longitude: 0 }, 10_000)).toEqual([]);
+    });
+
+    it('hands back the cached station objects, prices included', async () => {
+      const found = await nearby.getStationsNearby(CENTER, 1);
+
+      expect(found[0]?.station).toBe(await nearby.getStation('1'));
+      expect(found[0]?.station.prices.gazole?.price).toBe(1.9);
+    });
+
+    it('loads the dataset on first use, like every other getter', async () => {
+      const stub = stubFetch(() => [rawRecord(1)]);
+      const cold = new FuelPricesClient({ fetch: stub.fetch });
+
+      expect(await cold.getStationsNearby(CENTER, 5_000)).toHaveLength(1);
+      expect(stub.calls).toBe(1);
+    });
+
+    it('rejects a point that is not on Earth, before hitting the network', async () => {
+      const stub = stubFetch(() => [rawRecord(1)]);
+      const guarded = new FuelPricesClient({ fetch: stub.fetch });
+
+      await expect(
+        guarded.getStationsNearby({ latitude: 91, longitude: 0 }, 5_000),
+      ).rejects.toMatchObject({ name: 'FuelPricesError', code: 'invalid_argument' });
+      expect(stub.calls).toBe(0);
+    });
+
+    it('rejects a radius it cannot bound a search with', async () => {
+      await expect(nearby.getStationsNearby(CENTER, -1)).rejects.toMatchObject({
+        code: 'invalid_argument',
+      });
+      await expect(nearby.getStationsNearby(CENTER, Number.NaN)).rejects.toMatchObject({
+        code: 'invalid_argument',
+      });
+    });
+  });
+
   it('skips a station the feed gave no city', async () => {
     const nameless = new FuelPricesClient({
       fetch: stubFetch(() => [rawRecord(1, { ville: null, cp: null, code_departement: null })])
