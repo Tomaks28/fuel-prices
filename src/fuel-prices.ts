@@ -10,11 +10,12 @@
 
 import { FuelPricesError } from './errors.js';
 import { STATION_SELECT, updatedSinceWhere } from './internal/dataset.js';
+import { assertGeoPoint, assertRadius, distanceMeters } from './internal/geo.js';
 import { DatasetClient, type DatasetClientOptions } from './internal/http.js';
 import { hasChanged, toStation } from './internal/normalize.js';
 import { toLookupKey } from './internal/text.js';
 
-import type { FuelType, Station, SyncResult } from './types.js';
+import type { FuelType, GeoPoint, NearbyStation, Station, SyncResult } from './types.js';
 
 export interface FuelPricesOptions extends DatasetClientOptions {
   /**
@@ -159,6 +160,34 @@ export class FuelPricesClient {
   async getStationsByDepartment(code: string, signal?: AbortSignal): Promise<Station[]> {
     await this.load(signal);
     return [...(this.#indexes().byDepartment.get(code.trim().toUpperCase()) ?? [])];
+  }
+
+  /**
+   * Stations within `radiusMeters` of a point, nearest first, each with its
+   * distance from that point.
+   *
+   * Distances are great-circle (haversine) on a spherical Earth, which is off by
+   * well under the precision the feed publishes. Stations the dataset gave no
+   * coordinates for cannot match and are left out.
+   */
+  async getStationsNearby(
+    center: GeoPoint,
+    radiusMeters: number,
+    signal?: AbortSignal,
+  ): Promise<NearbyStation[]> {
+    assertGeoPoint(center, 'center');
+    assertRadius(radiusMeters, 'radiusMeters');
+    await this.load(signal);
+
+    const found: NearbyStation[] = [];
+    for (const station of this.#stations.values()) {
+      if (station.location === null) continue;
+
+      const distance = distanceMeters(center, station.location);
+      if (distance <= radiusMeters) found.push({ station, distanceMeters: distance });
+    }
+
+    return found.sort((a, b) => a.distanceMeters - b.distanceMeters);
   }
 
   /** Stations selling `fuel`, cheapest first. */
