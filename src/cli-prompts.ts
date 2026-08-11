@@ -6,6 +6,7 @@
  * `cli.ts` binds it to `node:readline`.
  */
 
+import { createStyle, type Style } from './cli-format.js';
 import { FuelPricesError } from './errors.js';
 import { FUEL_TYPES, type FuelType, type GeoPoint, type StationSort } from './types.js';
 
@@ -58,19 +59,29 @@ export function defaultAnswers(): Answers {
  * Walks the questions in order. An empty answer keeps the default, so pressing
  * Enter through the whole flow searches 20 km around Paris.
  */
-export async function promptForAnswers(ask: Ask): Promise<Answers> {
+export async function promptForAnswers(
+  ask: Ask,
+  style: Style = createStyle(false),
+): Promise<Answers> {
   const answers = defaultAnswers();
+  const prompt: Prompter = { ask, style };
 
-  answers.place = await askText(ask, 'Where? "lat,lon" or a city name', answers.place);
-  answers.radiusMeters = await askNumber(ask, 'Radius in metres', answers.radiusMeters);
-  answers.fuels = await askFuels(ask, 'Fuel(s), comma separated', 'any');
-  answers.openNow = await askYesNo(ask, 'Only stations open right now?', answers.openNow);
-  answers.maxPriceAge = await askAge(ask, 'Ignore quotes older than', answers.maxPriceAge);
-  answers.sort = await askSort(ask, 'Sort by', answers.sort);
-  answers.limit = await askNumber(ask, 'How many results', answers.limit);
-  answers.cachePath = await askCache(ask, 'Cache file ("none" to disable)', answers.cachePath);
+  answers.place = await askText(prompt, 'Where? "lat,lon" or a city name', answers.place);
+  answers.radiusMeters = await askNumber(prompt, 'Radius in metres', answers.radiusMeters);
+  answers.fuels = await askFuels(prompt, 'Fuel(s), comma separated', 'any');
+  answers.openNow = await askYesNo(prompt, 'Only stations open right now?', answers.openNow);
+  answers.maxPriceAge = await askAge(prompt, 'Ignore quotes older than', answers.maxPriceAge);
+  answers.sort = await askSort(prompt, 'Sort by', answers.sort);
+  answers.limit = await askNumber(prompt, 'How many results', answers.limit);
+  answers.cachePath = await askCache(prompt, 'Cache file', answers.cachePath);
 
   return answers;
+}
+
+/** What a question needs: somewhere to ask, and how to paint. */
+interface Prompter {
+  ask: Ask;
+  style: Style;
 }
 
 /** `"48.85,2.35"` as a point, or `null` when it reads as a city name. */
@@ -128,13 +139,28 @@ export function centreOf(points: readonly GeoPoint[]): GeoPoint | null {
   };
 }
 
-async function askText(ask: Ask, question: string, fallback: string): Promise<string> {
-  const answer = (await ask(`${question} [${fallback}]: `)).trim();
+/**
+ * Assembles one question: the hint dim, the default cyan between brackets, so
+ * the eye lands on what pressing Enter would choose.
+ *
+ * Built from parts on purpose — painting the finished string with a regex ate
+ * the `(s)` of "Fuel(s)" and then matched inside its own escape sequences.
+ */
+async function askText(
+  prompt: Prompter,
+  question: string,
+  fallback: string,
+  hint?: string,
+): Promise<string> {
+  const { style } = prompt;
+  const painted = hint === undefined ? question : `${question} ${style.dim(`(${hint})`)}`;
+  const answer = (await prompt.ask(`${painted} [${style.cyan(fallback)}]: `)).trim();
+
   return answer === '' ? fallback : answer;
 }
 
-async function askNumber(ask: Ask, question: string, fallback: number): Promise<number> {
-  const answer = await askText(ask, question, String(fallback));
+async function askNumber(prompt: Prompter, question: string, fallback: number): Promise<number> {
+  const answer = await askText(prompt, question, String(fallback));
 
   const parsed = Number(answer);
   if (!Number.isFinite(parsed) || parsed < 0) {
@@ -143,29 +169,33 @@ async function askNumber(ask: Ask, question: string, fallback: number): Promise<
   return parsed;
 }
 
-async function askYesNo(ask: Ask, question: string, fallback: boolean): Promise<boolean> {
-  const answer = (await askText(ask, question, fallback ? 'y' : 'n')).toLowerCase();
+async function askYesNo(prompt: Prompter, question: string, fallback: boolean): Promise<boolean> {
+  const answer = (await askText(prompt, question, fallback ? 'y' : 'n')).toLowerCase();
   if (['y', 'yes', 'o', 'oui', 'true'].includes(answer)) return true;
   if (['n', 'no', 'non', 'false'].includes(answer)) return false;
 
   throw invalid(`Expected yes or no, got "${answer}".`);
 }
 
-async function askFuels(ask: Ask, question: string, fallback: string): Promise<FuelType[]> {
-  return parseFuels(await askText(ask, `${question} (${FUEL_TYPES.join(', ')})`, fallback));
+async function askFuels(prompt: Prompter, question: string, fallback: string): Promise<FuelType[]> {
+  return parseFuels(await askText(prompt, question, fallback, FUEL_TYPES.join(', ')));
 }
 
 async function askAge(
-  ask: Ask,
+  prompt: Prompter,
   question: string,
   fallback: number | undefined,
 ): Promise<number | undefined> {
   const label = fallback === undefined ? 'none' : `${String(fallback / 86_400_000)}d`;
-  return parseAge(await askText(ask, question, label));
+  return parseAge(await askText(prompt, question, label, '7d, 12h, 90m, or none'));
 }
 
-async function askSort(ask: Ask, question: string, fallback: StationSort): Promise<StationSort> {
-  const answer = await askText(ask, `${question} (${SORTS.join(', ')})`, fallback);
+async function askSort(
+  prompt: Prompter,
+  question: string,
+  fallback: StationSort,
+): Promise<StationSort> {
+  const answer = await askText(prompt, question, fallback, SORTS.join(', '));
   if (!(SORTS as readonly string[]).includes(answer)) {
     throw invalid(`Expected one of ${SORTS.join(', ')}, got "${answer}".`);
   }
@@ -173,11 +203,11 @@ async function askSort(ask: Ask, question: string, fallback: StationSort): Promi
 }
 
 async function askCache(
-  ask: Ask,
+  prompt: Prompter,
   question: string,
   fallback: string | undefined,
 ): Promise<string | undefined> {
-  const answer = await askText(ask, question, fallback ?? 'none');
+  const answer = await askText(prompt, question, fallback ?? 'none', '"none" to disable');
   return isNone(answer) ? undefined : answer;
 }
 
