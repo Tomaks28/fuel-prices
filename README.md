@@ -3,9 +3,6 @@
 TypeScript SDK returning fuel prices of French gas stations, backed by the official open data
 feed published on [data.economie.gouv.fr][dataset] (~9 800 stations, no API key required).
 
-> **Status: scaffolding.** The build, type and lint toolchain is in place; the public API is not
-> implemented yet. Nothing but `VERSION` is exported at this point.
-
 ## Install
 
 ```sh
@@ -14,6 +11,89 @@ npm install @tomaks28/fuel-prices
 
 Requires Node.js >= 18 (uses the global `fetch`). Ships both ESM and CJS builds with type
 declarations.
+
+## Usage
+
+The SDK keeps one in-memory snapshot of the dataset behind a shared client, so a process reads
+the ~9 800 stations once and then serves lookups locally.
+
+```ts
+import { getFuelPricesClient } from '@tomaks28/fuel-prices';
+
+const fuelPrices = getFuelPricesClient(); // shared instance, created on first call
+
+// Initial load — idempotent, and implied by every getter below.
+await fuelPrices.load();
+
+const stations = await fuelPrices.getStationsByCity('saint-malo');
+console.log(stations[0]?.prices.gazole); // { fuel: 'gazole', price: 2.11, updatedAt: '…Z' }
+
+// Later on: fetch only the prices that moved since the last sync.
+const delta = await fuelPrices.sync();
+console.log(delta.updated, 'stations updated', delta.stations);
+```
+
+`getFuelPricesClient()` and `FuelPricesClient.getInstance()` return the same instance; options
+only apply to the call that creates it. `new FuelPricesClient(options)` gives an isolated
+instance (per-tenant caches, tests), and `resetFuelPricesClient()` drops the shared one.
+
+### Reading the cache
+
+Every getter awaits the initial load, so calling `load()` yourself is optional.
+
+| Method                          | Returns                                             |
+| ------------------------------- | --------------------------------------------------- |
+| `getStations()`                 | Every cached station                                |
+| `getStation(id)`                | One station by dataset id                           |
+| `getStationsByCity(city)`       | Case-, accent- and separator-insensitive city match |
+| `getStationsByPostalCode(code)` | Stations of a postal code                           |
+| `getStationsByDepartment(code)` | Stations of a département (INSEE code)              |
+| `getStationsByFuel(fuel)`       | Stations selling that fuel, cheapest first          |
+| `getStationsUpdatedSince(date)` | Cached stations whose price moved after `date`      |
+
+City names are not INSEE-coded upstream, so homonyms share a bucket — filter on `postalCode`
+when that matters. Lookups are served from indexes rebuilt on demand after a sync.
+
+### Keeping it fresh
+
+| Method      | Requests                                              | Cost                          |
+| ----------- | ----------------------------------------------------- | ----------------------------- |
+| `load()`    | Whole dataset, once (no-op if already loaded)         | ~2 MB, 10–20 s server-side    |
+| `refresh()` | Whole dataset, unconditionally                        | same                          |
+| `sync()`    | Only stations whose price changed since the last sync | usually a few hundred records |
+
+`sync()` filters upstream on the per-fuel `_maj` timestamps, minus a 5-minute overlap
+(`syncOverlapMs`) covering the portal's own cache window. It therefore catches price changes,
+but not stations added to or removed from the dataset without one — run `refresh()` on a slower
+cadence (daily is plenty) for those. Concurrent syncs are serialised, and a failed one leaves
+the cache untouched.
+
+Each call reports what it did:
+
+```ts
+const result = await fuelPrices.sync();
+// { mode: 'incremental', since, syncedAt, fetched, added, updated, unchanged, removed, total, stations }
+```
+
+### Options and errors
+
+```ts
+const client = new FuelPricesClient({
+  timeoutMs: 60_000, // per attempt
+  retries: 2, // retried on 408/425/429/5xx and network failures, honouring Retry-After
+  syncOverlapMs: 5 * 60 * 1000,
+  fetch: myFetch, // stub or instrument the transport
+  baseUrl,
+  dataset, // point at another Opendatasoft portal
+});
+```
+
+Everything throws `FuelPricesError`, carrying a `code` (`http`, `network`, `timeout`, `aborted`,
+`invalid_response`, `invalid_argument`, `unsupported`) plus `status` / `apiCode` when the failure
+came from the API. All network methods accept an `AbortSignal`.
+
+Out of scope for now: opening hours (the raw `horaires` field is not parsed) and geographic
+radius search.
 
 ## Development
 
@@ -72,9 +152,11 @@ either of:
 
 ## Data source
 
-Prices come from the _Prix des carburants en France (flux instantané)_ dataset. It is public
-open data: no credentials, no quota published, best-effort freshness. This package is not
-affiliated with the French administration.
+Prices come from the _Prix des carburants en France (flux instantané)_ dataset, read through the
+Opendatasoft Explore API v2.1. It is public open data: no credentials, best-effort freshness, and
+an anonymous budget the portal reports as 50 000 requests/day (`X-RateLimit-*` headers) with a
+5-minute response cache — which the sync strategy above stays well within. Prices and timestamps
+are self-reported by the stations. This package is not affiliated with the French administration.
 
 ## License
 

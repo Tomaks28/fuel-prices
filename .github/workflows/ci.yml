@@ -64,6 +64,9 @@ jobs:
         run: |
           node -e "import('./dist/index.js').then(m => {
             if (typeof m.VERSION !== 'string') throw new Error('ESM: VERSION missing');
+            if (m.getFuelPricesClient() !== m.FuelPricesClient.getInstance()) {
+              throw new Error('ESM: singleton mismatch');
+            }
             console.log('ESM ok, VERSION =', m.VERSION);
           })"
 
@@ -72,5 +75,8 @@ jobs:
           node -e "
             const m = require('./dist/index.cjs');
             if (typeof m.VERSION !== 'string') throw new Error('CJS: VERSION missing');
+            if (m.getFuelPricesClient() !== m.FuelPricesClient.getInstance()) {
+              throw new Error('CJS: singleton mismatch');
+            }
             console.log('CJS ok, VERSION =', m.VERSION);
           "
