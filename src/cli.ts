@@ -4,6 +4,7 @@
  * `tsdown.cli.config.ts` into the git-ignored `dist-cli/`, which the tarball
  * never sees.
  *
+ *   npm run cli -- ask
  *   npm run cli -- nearby 48.1173 -1.6778 3000 --fuel gazole --open-now
  *   npm run cli -- stats gazole --department 35
  *   npm run cli -- find --city rennes --fuel e85 --sort price --limit 5
@@ -12,7 +13,24 @@
 
 /* eslint-disable no-console */
 
+import { createInterface } from 'node:readline/promises';
+
 import { createFileCache } from './cache.js';
+import {
+  createStyle,
+  formatElapsed,
+  formatFooter,
+  formatMatches,
+  shouldUseColour,
+  type Style,
+} from './cli-format.js';
+import {
+  centreOf,
+  defaultAnswers,
+  parsePlace,
+  promptForAnswers,
+  type Answers,
+} from './cli-prompts.js';
 import { FuelPricesError } from './errors.js';
 import { FuelPricesClient, type FuelPricesOptions } from './fuel-prices.js';
 import { FUEL_TYPES, type FuelType, type StationMatch, type StationQuery } from './types.js';
@@ -23,6 +41,7 @@ Usage
   cli <command> [options]
 
 Commands
+  ask                       Interactive prompts, Enter accepts every default
   find                      Search with any combination of the options below
   nearby <lat> <lon> <m>    Stations within a radius, nearest first
   city <name>               Stations of a city
@@ -49,8 +68,10 @@ Filters (find, nearby, city, cp, dept, stats)
   --limit <n>
 
 Other
+  --defaults                With "ask", take every default without prompting
   --cache <file>            Persist the snapshot, and hydrate from it
   --json                    Machine-readable output
+  --no-color                Never colour, whatever the terminal says
   --help
 `;
 
@@ -168,81 +189,216 @@ function toQuery(args: ParsedArgs): StationQuery {
 
 function clientOptions(args: ParsedArgs): FuelPricesOptions {
   const cachePath = text(args.flags, 'cache');
-  if (cachePath === undefined) return {};
+  return cachePath === undefined ? {} : cacheOptions(cachePath);
+}
 
+function cacheOptions(cachePath: string): FuelPricesOptions {
   return {
     cache: createFileCache(cachePath),
     onCacheError: (error) => console.error(`cache: ${error.message}`),
   };
 }
 
+interface PrintContext {
+  style: Style;
+  asJson: boolean;
+  /** Fuel the results are sorted on, if any: its column is highlighted. */
+  highlight: FuelType | undefined;
+  elapsedMs: () => number;
+}
+
+/**
+ * `stdout.columns` is undefined when the output is piped, where `COLUMNS` often
+ * still is not — and `Number(undefined)` is NaN, which `??` would happily keep.
+ */
+function terminalWidth(): number {
+  const fromEnv = Number(process.env.COLUMNS);
+  return process.stdout.columns ?? (Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 100);
+}
+
+/** The fuel worth highlighting: the sort key, or the only one asked for. */
+function highlightOf(query: StationQuery): FuelType | undefined {
+  const fuels = query.fuel === undefined ? [] : [query.fuel].flat();
+  if (query.sort === 'price') return fuels[0];
+  return fuels.length === 1 ? fuels[0] : undefined;
+}
+
 function fail(message: string): FuelPricesError {
   return new FuelPricesError(message, { code: 'invalid_argument' });
 }
 
-function formatPrices(match: StationMatch): string {
-  const prices = FUEL_TYPES.map((fuel) => {
-    const price = match.station.prices[fuel];
-    return price === undefined ? null : `${fuel}=${price.price.toFixed(3)}`;
-  }).filter((entry) => entry !== null);
-
-  return prices.length === 0 ? 'no price' : prices.join(' ');
-}
-
-/** `2026-08-11T09:47:00.000Z (3 h ago)`, or `never`. */
-function formatAge(updatedAt: string | null): string {
-  if (updatedAt === null) return 'never';
-
-  const ageMs = Date.now() - Date.parse(updatedAt);
-  const hours = Math.round(ageMs / (60 * 60 * 1000));
-  const label = hours < 48 ? `${String(hours)} h` : `${String(Math.round(hours / 24))} d`;
-
-  return `${updatedAt} (${label} ago)`;
-}
-
-function printMatches(matches: StationMatch[], client: FuelPricesClient, asJson: boolean): void {
-  if (asJson) {
+function printMatches(
+  matches: StationMatch[],
+  client: FuelPricesClient,
+  context: PrintContext,
+): void {
+  if (context.asJson) {
     console.log(JSON.stringify(matches, null, 2));
     return;
   }
 
-  if (matches.length === 0) {
-    console.log('No station matched.');
-    return;
-  }
-
   const now = new Date();
-  for (const match of matches) {
-    const { station } = match;
-    const distance =
-      match.distanceMeters === null ? '' : `${String(Math.round(match.distanceMeters))} m  `;
-    const open = client.isOpenAt(station, now);
-    const openLabel = open === null ? 'hours unknown' : open ? 'open' : 'closed';
+  const lines = formatMatches(matches, {
+    style: context.style,
+    width: terminalWidth(),
+    isOpen: (match) => client.isOpenAt(match.station, now),
+    ...(context.highlight === undefined ? {} : { highlight: context.highlight }),
+    now: now.getTime(),
+  });
 
-    console.log(
-      `${distance}${station.city} ${station.postalCode} [${station.id}] ${station.kind}, ${openLabel}`,
-    );
-    console.log(`    ${formatPrices(match)}`);
-    console.log(`    ${station.address}  (updated ${formatAge(station.updatedAt)})`);
+  for (const line of lines) console.log(line);
+  if (matches.length > 0) {
+    console.log(formatFooter(matches.length, client.size, context.elapsedMs(), context.style));
   }
-  console.log(`\n${String(matches.length)} station(s), out of ${String(client.size)} cached.`);
+}
+
+/** Binds the question flow to the terminal. */
+async function askInteractively(style: Style): Promise<Answers> {
+  if (!process.stdin.isTTY) {
+    throw fail('`ask` needs a terminal. Use `find` with flags when piping, or pass --defaults.');
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await promptForAnswers((question) => rl.question(question), style);
+  } finally {
+    rl.close();
+  }
+}
+
+/** Ctrl+C and Ctrl+D reach us as an AbortError; they mean "cancelled", not "crashed". */
+function isCancellation(error: unknown): boolean {
+  return (
+    error instanceof Error && (error.name === 'AbortError' || error.name === 'ExitPromptError')
+  );
+}
+
+/**
+ * Runs the query the answers describe. A city name is resolved against the
+ * dataset itself — the centre of its stations — rather than a built-in gazetteer.
+ */
+async function runAnswers(
+  answers: Answers,
+  client: FuelPricesClient,
+  context: PrintContext,
+): Promise<number> {
+  let near = parsePlace(answers.place);
+
+  if (near === null) {
+    const inCity = await client.findStations({ city: answers.place });
+    const located = inCity.map((match) => match.station.location).filter((point) => point !== null);
+
+    near = centreOf(located);
+    if (near === null) {
+      console.error(`No station found in "${answers.place}", so it cannot be used as a centre.`);
+      return 1;
+    }
+    console.log(
+      context.style.dim(
+        `${answers.place}: ${String(inCity.length)} stations, centred on ` +
+          `${near.latitude.toFixed(4)},${near.longitude.toFixed(4)}`,
+      ),
+    );
+  }
+
+  const query: StationQuery = {
+    near,
+    radiusMeters: answers.radiusMeters,
+    ...(answers.fuels.length === 0 ? {} : { fuel: answers.fuels }),
+    ...(answers.openNow ? { openAt: new Date() } : {}),
+    ...(answers.maxPriceAge === undefined ? {} : { maxPriceAge: answers.maxPriceAge }),
+    sort: answers.sort,
+    limit: answers.limit,
+  };
+
+  printMatches(await client.findStations(query), client, {
+    ...context,
+    highlight: highlightOf(query),
+  });
+  return 0;
+}
+
+/**
+ * Loads the dataset out loud. A cold read is a server-side export that has been
+ * measured anywhere between 13 s and 73 s, which is far too long to spend in
+ * silence; a cached one is instant and worth confirming too.
+ */
+async function reportLoad(
+  client: FuelPricesClient,
+  style: Style,
+  cachePath: string | undefined,
+): Promise<void> {
+  const started = Date.now();
+  console.log(
+    style.dim(
+      cachePath === undefined
+        ? '\nReading the whole dataset (no cache; this can take a minute)…'
+        : `\nReading the dataset (cache: ${cachePath})…`,
+    ),
+  );
+
+  const result = await client.load();
+  const elapsed = formatElapsed(Date.now() - started);
+  const source =
+    result.mode === 'cache' ? 'from the cache' : 'downloaded, and cached for next time';
+
+  console.log(style.dim(`${String(client.size)} stations ${source} in ${elapsed}\n`));
 }
 
 async function run(argv: string[]): Promise<number> {
   const args = parseArgs(argv);
   const asJson = args.flags.get('json') === true;
+  const style = createStyle(
+    !asJson &&
+      shouldUseColour(
+        process.env,
+        process.stdout.isTTY === true,
+        args.flags.get('no-color') === true,
+      ),
+  );
 
   if (args.flags.get('help') === true || args.command === 'help') {
     console.log(USAGE);
     return 0;
   }
 
-  const client = new FuelPricesClient(clientOptions(args));
   const started = Date.now();
+  const printContext: PrintContext = {
+    style,
+    asJson,
+    highlight: undefined,
+    elapsedMs: () => Date.now() - started,
+  };
+
+  // `ask` builds its own client: the cache file is one of the questions.
+  if (args.command === 'ask') {
+    const answers =
+      args.flags.get('defaults') === true
+        ? defaultAnswers()
+        : await askInteractively(style).catch((error: unknown) => {
+            if (!isCancellation(error)) throw error;
+            console.log('\nCancelled.');
+            return null;
+          });
+    if (answers === null) return 0;
+
+    const interactive = new FuelPricesClient(
+      answers.cachePath === undefined ? {} : cacheOptions(answers.cachePath),
+    );
+    if (!asJson) await reportLoad(interactive, style, answers.cachePath);
+
+    return runAnswers(answers, interactive, printContext);
+  }
+
+  const client = new FuelPricesClient(clientOptions(args));
 
   switch (args.command) {
     case 'find': {
-      printMatches(await client.findStations(toQuery(args)), client, asJson);
+      const query = toQuery(args);
+      printMatches(await client.findStations(query), client, {
+        ...printContext,
+        highlight: highlightOf(query),
+      });
       break;
     }
 
@@ -251,12 +407,15 @@ async function run(argv: string[]): Promise<number> {
       if (latitude === undefined || longitude === undefined || radius === undefined) {
         throw fail('nearby expects <lat> <lon> <metres>.');
       }
-      const matches = await client.findStations({
+      const query: StationQuery = {
         ...toQuery(args),
         near: { latitude: Number(latitude), longitude: Number(longitude) },
         radiusMeters: Number(radius),
+      };
+      printMatches(await client.findStations(query), client, {
+        ...printContext,
+        highlight: highlightOf(query),
       });
-      printMatches(matches, client, asJson);
       break;
     }
 
@@ -268,7 +427,11 @@ async function run(argv: string[]): Promise<number> {
 
       const key =
         args.command === 'city' ? 'city' : args.command === 'cp' ? 'postalCode' : 'department';
-      printMatches(await client.findStations({ ...toQuery(args), [key]: value }), client, asJson);
+      const query: StationQuery = { ...toQuery(args), [key]: value };
+      printMatches(await client.findStations(query), client, {
+        ...printContext,
+        highlight: highlightOf(query),
+      });
       break;
     }
 
@@ -342,7 +505,6 @@ async function run(argv: string[]): Promise<number> {
       return 1;
   }
 
-  if (!asJson) console.log(`(${String(Date.now() - started)} ms)`);
   return 0;
 }
 

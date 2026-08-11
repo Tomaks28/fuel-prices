@@ -280,6 +280,47 @@ A hand-driving harness for every code path, against the real feed. It is **not**
 published: it builds through [`tsdown.cli.config.ts`](./tsdown.cli.config.ts) into
 the git-ignored `dist-cli/`, and the tarball ships `dist/` only.
 
+The quickest way in is the interactive mode: every question carries a default,
+so pressing Enter through it searches **20 km around Paris**.
+
+```sh
+npm run cli -- ask            # prompts, Enter accepts each default
+npm run cli -- ask --defaults # skip the prompts entirely
+```
+
+```
+Where? "lat,lon" or a city name [Paris]:
+Radius in metres [20000]:
+Fuel(s), comma separated (gazole, sp95, sp98, e10, e85, gplc) [any]:
+Only stations open right now? [n]:
+Ignore quotes older than [7d]:
+Sort by (distance, price, updatedAt) [distance]:
+How many results [10]:
+Cache file ("none" to disable) [.cache/fuel-prices.json]:
+```
+
+Results come back as an aligned table, one row per station, with a column only
+for the fuels somebody in the result set actually sells:
+
+```
+#       DIST PLACE                                   GAZOLE   SP95   SP98    E10   GPLC   AGE STATUS   ID
+1.    2.9 km Vernouillet 28500 · C C PLEIN SUD        2.046      —  1.955  1.876      —    9h open     28500001
+2.    1.0 km Dreux 28100 · Rue Bautzen                2.047      —  1.955  1.878      —   15h open     28100002
+3.    1.4 km Dreux 28100 · Rue des Bas Buissons       2.059      —  1.959  1.879  0.971   13h open     28100003
+```
+
+In a terminal it is coloured: the cheapest quote of each column green, the sorted
+column bold, open green and closed red, and a quote older than a week yellow —
+red past a month. Colour is off when the output is piped, `NO_COLOR` is honoured,
+and `--no-color` overrides everything.
+
+Answer the first question with a city name and it is resolved against the dataset
+itself — the centre of that city's stations — rather than a built-in gazetteer.
+`ask` refuses to run without a terminal, so piping into it fails fast instead of
+hanging; use `find` with flags there.
+
+Or drive it with flags:
+
 ```sh
 npm run cli -- --help
 npm run cli -- nearby 48.1173 -1.6778 3000 --fuel gazole --sort price --limit 3
