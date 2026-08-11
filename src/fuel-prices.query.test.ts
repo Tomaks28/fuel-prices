@@ -175,6 +175,75 @@ describe('findStations', () => {
     expect(await ids({ fuel: 'gazole', sort: 'updatedAt' })).toHaveLength(5);
   });
 
+  describe('the freshness filter', () => {
+    // Station 6 quotes gazole today and E85 five months ago — the pattern the
+    // per-fuel rule exists for.
+    const STALE_FEED = [
+      rawRecord(6, {
+        ville: 'Vieux Prix',
+        gazole_prix: 2.0,
+        gazole_maj: '2026-08-11T09:00:00+00:00',
+        e85_prix: 0.75,
+        e85_maj: '2026-03-01T09:00:00+00:00',
+      }),
+      rawRecord(7, {
+        ville: 'Tout Frais',
+        gazole_prix: 2.0,
+        gazole_maj: '2026-08-11T09:00:00+00:00',
+        e85_prix: 0.79,
+        e85_maj: '2026-08-11T09:00:00+00:00',
+      }),
+      // No price at all, so no age either.
+      rawRecord(8, { ville: 'Sans Prix', gazole_prix: null, gazole_maj: null }),
+    ];
+
+    const DAY = 24 * 60 * 60 * 1000;
+
+    beforeEach(() => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-08-11T12:00:00.000Z'));
+    });
+
+    async function staleIds(query: StationQuery): Promise<string[]> {
+      const matches = await client(STALE_FEED).findStations(query);
+      return matches.map((match) => match.station.id);
+    }
+
+    it('measures the age of the fuel that was asked for', async () => {
+      expect(await staleIds({ fuel: 'e85', maxPriceAge: 7 * DAY })).toEqual(['7']);
+      // Both quoted gazole this morning, so both stay.
+      expect(await staleIds({ fuel: 'gazole', maxPriceAge: 7 * DAY })).toEqual(['6', '7']);
+    });
+
+    it('falls back to the station freshest price when no fuel is named', async () => {
+      // Station 6 looks fresh on its gazole, which is exactly the trap.
+      expect(await staleIds({ maxPriceAge: 7 * DAY })).toEqual(['6', '7']);
+    });
+
+    it('requires every named fuel to be fresh', async () => {
+      expect(await staleIds({ fuel: ['gazole', 'e85'], maxPriceAge: 7 * DAY })).toEqual(['7']);
+    });
+
+    it('drops a price the feed never dated', async () => {
+      expect(await staleIds({ maxPriceAge: 365 * DAY })).not.toContain('8');
+      expect(await staleIds({})).toContain('8');
+    });
+
+    it('widens with the window', async () => {
+      expect(await staleIds({ fuel: 'e85', maxPriceAge: 200 * DAY })).toEqual(['6', '7']);
+      // Quoted at 09:00, and the clock reads 12:00: three hours old.
+      expect(await staleIds({ fuel: 'gazole', maxPriceAge: 4 * 60 * 60 * 1000 })).toEqual([
+        '6',
+        '7',
+      ]);
+      expect(await staleIds({ fuel: 'gazole', maxPriceAge: 60 * 60 * 1000 })).toEqual([]);
+      expect(await staleIds({ fuel: 'gazole', maxPriceAge: 0 })).toEqual([]);
+    });
+
+    it('combines with the other criteria', async () => {
+      expect(await staleIds({ fuel: 'e85', maxPriceAge: 7 * DAY, city: 'Vieux Prix' })).toEqual([]);
+    });
+  });
+
   it('caps the result set', async () => {
     expect(await ids({ near: CENTER, radiusMeters: 3_000, limit: 2 })).toEqual(['1', '2']);
     expect(await ids({ limit: 0 })).toEqual([]);
@@ -198,6 +267,8 @@ describe('findStations', () => {
     ['a fractional limit', { limit: 1.5 }],
     ['a negative limit', { limit: -1 }],
     ['an unreadable openAt', { openAt: new Date('nonsense') }],
+    ['a negative maxPriceAge', { maxPriceAge: -1 }],
+    ['an infinite maxPriceAge', { maxPriceAge: Number.POSITIVE_INFINITY }],
   ])('rejects %s', async (_label, query) => {
     await expect(client().findStations(query)).rejects.toMatchObject({
       name: 'FuelPricesError',
