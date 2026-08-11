@@ -50,6 +50,7 @@
   "scripts": {
     "build": "tsdown",
     "build:verify": "tsdown --publint --attw --fail-on-warn",
+    "cli": "tsdown --config tsdown.cli.config.ts && node dist-cli/cli.mjs",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
