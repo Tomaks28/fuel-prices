@@ -1,0 +1,45 @@
+{
+  "name": "@tomaks28/fuel-prices",
+  "version": "0.0.0",
+  "description": "TypeScript SDK returning fuel prices of French gas stations, backed by official open data",
+  "keywords": [
+    "fuel",
+    "prices",
+    "gas-station",
+    "carburant",
+    "opendata",
+    "france",
+    "sdk"
+  ],
+  "license": "MIT",
+  "author": "Tomaks28",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.2"
+  }
+}
