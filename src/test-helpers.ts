@@ -96,7 +96,7 @@ export function recordingFetch(
     get calls() {
       return urls.length;
     },
-    lastUrl: () => urls[urls.length - 1] ?? '',
+    lastUrl: () => urls.at(-1) ?? '',
     lastParams: () => new URL(recorder.lastUrl()).searchParams,
   };
   return recorder;
