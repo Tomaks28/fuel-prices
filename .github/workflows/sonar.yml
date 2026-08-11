@@ -44,10 +44,12 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
+      # `--ignore-scripts`: this job only needs to run the test suite, so no
+      # dependency has any business running install-time lifecycle scripts here.
       - name: Collect coverage
         if: steps.token.outputs.present == 'true'
         run: |
-          npm ci
+          npm ci --ignore-scripts
           npm run test:coverage
 
       - name: Scan
