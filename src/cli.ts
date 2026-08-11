@@ -44,6 +44,7 @@ Filters (find, nearby, city, cp, dept, stats)
   --kind <road|highway>
   --open-now                Only stations the feed reports as open right now
   --open-at <iso>           Same, at a given instant
+  --max-price-age <age>     Drop stale quotes: 90m, 12h, 7d, or plain ms
   --sort <distance|price|updatedAt>
   --limit <n>
 
@@ -111,6 +112,25 @@ function fuels(flags: ParsedArgs['flags']): FuelType[] | undefined {
   });
 }
 
+const DURATION_UNITS: Readonly<Record<string, number>> = {
+  s: 1000,
+  m: 60 * 1000,
+  h: 60 * 60 * 1000,
+  d: 24 * 60 * 60 * 1000,
+};
+
+/** `7d`, `12h`, `90m`, `30s`, or a bare number already in milliseconds. */
+function duration(raw: string, label: string): number {
+  const match = /^(\d+(?:\.\d+)?)([smhd])?$/.exec(raw.trim());
+  const amount = Number(match?.[1]);
+  if (match === null || !Number.isFinite(amount)) {
+    throw fail(`${label} expects a duration like 7d, 12h, 90m or a number of ms, got "${raw}".`);
+  }
+
+  const unit = match[2];
+  return unit === undefined ? amount : amount * (DURATION_UNITS[unit] ?? 1);
+}
+
 function point(raw: string, label: string): { latitude: number; longitude: number } {
   const [latitude, longitude] = raw.split(',').map(Number);
   if (latitude === undefined || longitude === undefined) {
@@ -138,6 +158,8 @@ function toQuery(args: ParsedArgs): StationQuery {
   if (text(flags, 'kind') !== undefined) query.kind = text(flags, 'kind');
   if (flags.get('open-now') === true) query.openAt = new Date();
   if (openAt !== undefined) query.openAt = new Date(openAt);
+  const maxPriceAge = text(flags, 'max-price-age');
+  if (maxPriceAge !== undefined) query.maxPriceAge = duration(maxPriceAge, '--max-price-age');
   if (text(flags, 'sort') !== undefined) query.sort = text(flags, 'sort');
   if (flags.has('limit')) query.limit = number(flags, 'limit');
 
@@ -167,6 +189,17 @@ function formatPrices(match: StationMatch): string {
   return prices.length === 0 ? 'no price' : prices.join(' ');
 }
 
+/** `2026-08-11T09:47:00.000Z (3 h ago)`, or `never`. */
+function formatAge(updatedAt: string | null): string {
+  if (updatedAt === null) return 'never';
+
+  const ageMs = Date.now() - Date.parse(updatedAt);
+  const hours = Math.round(ageMs / (60 * 60 * 1000));
+  const label = hours < 48 ? `${String(hours)} h` : `${String(Math.round(hours / 24))} d`;
+
+  return `${updatedAt} (${label} ago)`;
+}
+
 function printMatches(matches: StationMatch[], client: FuelPricesClient, asJson: boolean): void {
   if (asJson) {
     console.log(JSON.stringify(matches, null, 2));
@@ -190,7 +223,7 @@ function printMatches(matches: StationMatch[], client: FuelPricesClient, asJson:
       `${distance}${station.city} ${station.postalCode} [${station.id}] ${station.kind}, ${openLabel}`,
     );
     console.log(`    ${formatPrices(match)}`);
-    console.log(`    ${station.address}  (updated ${station.updatedAt ?? 'never'})`);
+    console.log(`    ${station.address}  (updated ${formatAge(station.updatedAt)})`);
   }
   console.log(`\n${String(matches.length)} station(s), out of ${String(client.size)} cached.`);
 }
