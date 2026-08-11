@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-import { defineConfig } from 'tsup';
+import { defineConfig } from 'tsdown';
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
   version: string;
@@ -9,9 +9,14 @@ const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 
 export default defineConfig({
   entry: ['src/index.ts'],
   format: ['esm', 'cjs'],
-  outExtension: ({ format }) => ({ js: format === 'cjs' ? '.cjs' : '.js' }),
+  platform: 'node',
   target: 'node18',
+  // Keeps ESM on `.js` (the package is `"type": "module"`) and CJS on `.cjs`,
+  // matching the `exports` map in package.json.
+  fixedExtension: false,
   dts: true,
+  // Maps embed `sourcesContent`, so they resolve for consumers without
+  // shipping `src/` in the tarball.
   sourcemap: true,
   clean: true,
   treeshake: true,
