@@ -60,11 +60,15 @@
   "devDependencies": {
     "@arethetypeswrong/core": "^0.18.5",
     "@eslint/js": "^10.0.1",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/exec": "^7.1.0",
+    "@semantic-release/git": "^10.0.1",
     "@types/node": "^24.13.3",
     "eslint": "^10.8.1",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.9.6",
     "publint": "^0.3.23",
+    "semantic-release": "^25.0.9",
     "tsdown": "^0.22.14",
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.67.0"
