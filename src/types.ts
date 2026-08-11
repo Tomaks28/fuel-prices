@@ -136,6 +136,15 @@ export interface StationQuery {
   readonly kind?: 'road' | 'highway';
   /** Keeps stations the feed reports as open at that instant. */
   readonly openAt?: Date;
+  /**
+   * Drops stations quoting a stale price, in ms.
+   *
+   * Measured against the prices of `fuel` when the query names any, and against
+   * the station's freshest price otherwise — the two differ far more than they
+   * look: a station can quote gazole hourly and E85 twice a year. A price the
+   * feed left undated can never satisfy this, so it drops out.
+   */
+  readonly maxPriceAge?: number;
   /** `distance` requires `near`, `price` requires a single `fuel`. */
   readonly sort?: StationSort;
   readonly limit?: number;

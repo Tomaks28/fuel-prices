@@ -517,6 +517,8 @@ interface Criteria {
   maxPrice: number | undefined;
   kind: 'road' | 'highway' | undefined;
   openAt: Date | undefined;
+  /** Absolute cut-off, precomputed so every candidate compares against the same one. */
+  fresherThan: string | undefined;
   sort: StationQuery['sort'];
   limit: number | undefined;
 }
@@ -553,6 +555,14 @@ function compileQuery(query: StationQuery): Criteria {
   if (query.openAt !== undefined && Number.isNaN(query.openAt.getTime())) {
     throw invalidArgument('`openAt` is not a valid date.');
   }
+  if (
+    query.maxPriceAge !== undefined &&
+    (!Number.isFinite(query.maxPriceAge) || query.maxPriceAge < 0)
+  ) {
+    throw invalidArgument(
+      `\`maxPriceAge\` must be a non-negative number of ms, got ${String(query.maxPriceAge)}.`,
+    );
+  }
 
   return {
     near: query.near,
@@ -564,6 +574,10 @@ function compileQuery(query: StationQuery): Criteria {
     maxPrice: query.maxPrice,
     kind: query.kind,
     openAt: query.openAt,
+    fresherThan:
+      query.maxPriceAge === undefined
+        ? undefined
+        : new Date(Date.now() - query.maxPriceAge).toISOString(),
     sort: query.sort,
     limit: query.limit,
   };
@@ -591,10 +605,24 @@ function matchesRest(station: Station, criteria: Criteria): boolean {
     const price = station.prices[fuel];
     if (price === undefined) return false;
     if (criteria.maxPrice !== undefined && price.price > criteria.maxPrice) return false;
+    // Per fuel, not per station: a station quoting gazole hourly can be sitting
+    // on an E85 price from six months ago, and 7.8 % of them are.
+    if (criteria.fresherThan !== undefined && !isFresh(price.updatedAt, criteria.fresherThan)) {
+      return false;
+    }
+  }
+
+  if (criteria.fresherThan !== undefined && criteria.fuels.length === 0) {
+    if (!isFresh(station.updatedAt, criteria.fresherThan)) return false;
   }
 
   // An unknown schedule is not a match: the SDK cannot claim the station is open.
   return criteria.openAt === undefined || isOpenAt(station, criteria.openAt) === true;
+}
+
+/** An undated price can never be shown to be fresh, so it is not. */
+function isFresh(updatedAt: string | null, fresherThan: string): boolean {
+  return updatedAt !== null && updatedAt >= fresherThan;
 }
 
 function sortMatches(matches: StationMatch[], criteria: Criteria): void {
