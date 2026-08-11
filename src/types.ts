@@ -62,6 +62,13 @@ export interface Station {
   readonly updatedAt: string | null;
 }
 
+/** A station found around a point, with how far it sits from it. */
+export interface NearbyStation {
+  readonly station: Station;
+  /** Great-circle distance from the requested point, in metres, unrounded. */
+  readonly distanceMeters: number;
+}
+
 /** What a call to `load`, `refresh` or `sync` did. */
 export interface SyncResult {
   /** `full` re-reads the whole dataset, `incremental` only the price updates. */
