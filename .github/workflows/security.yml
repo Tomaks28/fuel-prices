@@ -1,0 +1,89 @@
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # New advisories land without the code changing, so scan on a schedule too.
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trivy:
+    name: Trivy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # upload SARIF to code scanning
+    steps:
+      - uses: actions/checkout@v7
+
+      # First pass reports everything to code scanning, including severities
+      # that must not fail the build.
+      - name: Scan and report
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          format: sarif
+          output: trivy.sarif
+          exit-code: '0'
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy.sarif
+          category: trivy
+
+      # Second pass is the gate. Uses the cache primed above, so it is cheap.
+      - name: Fail on high and critical
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          skip-setup-trivy: true
+
+  bearer:
+    name: Bearer
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan and report
+        uses: bearer/bearer-action@v2
+        with:
+          scanner: secrets,sast
+          format: sarif
+          output: bearer.sarif
+          exit-code: '0'
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: bearer.sarif
+          category: bearer
+
+      - name: Fail on high and critical
+        uses: bearer/bearer-action@v2
+        with:
+          scanner: secrets,sast
+          severity: high,critical
+          exit-code: '1'
