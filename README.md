@@ -22,13 +22,14 @@ npm run check   # typecheck + lint + format check
 npm run build   # dual ESM/CJS bundle into dist/
 ```
 
-| Script              | Purpose                                     |
-| ------------------- | ------------------------------------------- |
-| `build`             | Bundle ESM + CJS + `.d.ts` via tsup         |
-| `typecheck`         | `tsc --noEmit` (strict, type-aware)         |
-| `lint` / `lint:fix` | ESLint flat config, type-aware rules        |
-| `format` / `:check` | Prettier                                    |
-| `check`             | All of the above, in the order CI runs them |
+| Script              | Purpose                                            |
+| ------------------- | -------------------------------------------------- |
+| `build`             | Bundle ESM + CJS + `.d.ts` via tsdown              |
+| `build:verify`      | Build, then gate on `publint` + `arethetypeswrong` |
+| `typecheck`         | `tsc --noEmit` (strict, type-aware)                |
+| `lint` / `lint:fix` | ESLint flat config, type-aware rules               |
+| `format` / `:check` | Prettier                                           |
+| `check`             | All of the above, in the order CI runs them        |
 
 ## Data source
 
