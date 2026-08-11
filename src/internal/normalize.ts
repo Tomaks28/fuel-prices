@@ -9,6 +9,7 @@ import {
 } from '../types.js';
 
 import type { RawStationRecord } from './dataset.js';
+import { parseOpeningHours } from './hours.js';
 
 /**
  * Returns `null` for records the SDK cannot key on (no `id`), which would
@@ -53,6 +54,7 @@ export function toStation(record: RawStationRecord): Station | null {
     kind: record.pop === 'A' ? 'highway' : 'road',
     open24h: record.horaires_automate_24_24 === 'Oui',
     services: record.services_service ?? [],
+    openingHours: parseOpeningHours(record.horaires),
     prices,
     outages,
     updatedAt,
