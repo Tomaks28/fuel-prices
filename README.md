@@ -92,6 +92,38 @@ Criteria are ANDed, an empty query returns everything, and each match carries
 in-memory snapshot — no request once it is warm. Contradictory queries throw
 `invalid_argument` **before** the dataset is loaded, so a typo costs nothing.
 
+### Stale prices
+
+Prices are self-reported, and how often depends heavily on the fuel:
+
+| Fuel   | Stations | Median age | Older than 7 days | Older than 30 days | Oldest |
+| ------ | -------- | ---------- | ----------------- | ------------------ | ------ |
+| gazole | 9 545    | 0 d        | 9.5 %             | 0.3 %              | 132 d  |
+| e10    | 7 319    | 0 d        | 7.8 %             | 0.4 %              | 371 d  |
+| sp98   | 7 347    | 0 d        | 12.5 %            | 0.8 %              | 157 d  |
+| sp95   | 2 985    | 3 d        | 24.2 %            | 3.3 %              | 378 d  |
+| e85    | 3 905    | 3 d        | 31.6 %            | 4.4 %              | 614 d  |
+| gplc   | 1 489    | 0 d        | 33.3 %            | **22.0 %**         | 340 d  |
+
+`maxPriceAge` filters them out:
+
+```ts
+const fresh = await fuelPrices.findStations({
+  near: { latitude: 48.1173, longitude: -1.6778 },
+  radiusMeters: 30_000,
+  fuel: 'gplc',
+  maxPriceAge: 7 * 24 * 60 * 60 * 1000,
+});
+// 16 GPLc stations in that radius, 8 of them quoted within the week
+```
+
+It measures the age of the **fuels the query names**, and falls back to the
+station's freshest price only when it names none. That distinction matters: a
+station quoting gazole hourly can be sitting on an E85 price from six months ago,
+and a station-level filter would wrongly keep 7.8 % of fuel prices for that
+reason. A price the feed left undated can never be shown to be fresh, so it drops
+out too.
+
 ### Price statistics
 
 A single price means little: gazole spans 1.244 to 2.800 nationally. `getPriceStats`
@@ -253,6 +285,7 @@ npm run cli -- --help
 npm run cli -- nearby 48.1173 -1.6778 3000 --fuel gazole --sort price --limit 3
 npm run cli -- find --city rennes --fuel e85 --open-now --cache .cache/stations.json
 npm run cli -- stats gazole --department 35
+npm run cli -- find --fuel gplc --max-price-age 7d --near 48.11,-1.67 --radius 30000
 npm run cli -- sync --cache .cache/stations.json
 npm run cli -- info
 ```
