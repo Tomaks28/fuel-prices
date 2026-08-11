@@ -66,9 +66,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # `config-file` is passed explicitly so both steps below read the same
+      # skip list, rather than relying on the scanner's config discovery.
       - name: Scan and report
         uses: bearer/bearer-action@828eeb928ce2f4a7ca5ed57fb8b59508cb8c79bc # v2
         with:
+          config-file: bearer.yml
           scanner: secrets,sast
           format: sarif
           output: bearer.sarif
@@ -92,6 +95,7 @@ jobs:
       - name: Fail on high and critical
         uses: bearer/bearer-action@828eeb928ce2f4a7ca5ed57fb8b59508cb8c79bc # v2
         with:
+          config-file: bearer.yml
           scanner: secrets,sast
           severity: high,critical
           exit-code: '1'
