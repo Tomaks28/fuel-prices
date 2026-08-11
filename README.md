@@ -50,8 +50,17 @@ derived from commit messages, which must follow [Conventional Commits][cc]:
 | `chore:`, `docs:`, `ci:`, `test:` | no release    |
 
 `package.json` keeps `version: 0.0.0`; the real version is written by CI at publish time and is
-re-exported as `VERSION`. Publishing requires an `NPM_TOKEN` repository secret with publish
-rights — without it the release job fails instead of publishing.
+re-exported as `VERSION`.
+
+Publishing is off until the `RELEASE_ENABLED` repository **variable** is set to `true`; until
+then the release job runs the checks and skips the publish with a notice. Authentication is
+either of:
+
+- **Trusted publishing** (preferred, no stored credential): configure this repository and
+  `release.yml` as a trusted publisher on npm. The workflow already grants `id-token: write`,
+  and the npm plugin attempts the OIDC exchange before it ever looks for a token.
+- **`NPM_TOKEN`** — an **Actions** secret (not a Dependabot secret; those are a separate store
+  that workflows cannot read) holding a token with publish rights.
 
 ## Continuous integration
 
