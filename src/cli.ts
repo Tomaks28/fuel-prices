@@ -4,6 +4,7 @@
  * `tsdown.cli.config.ts` into the git-ignored `dist-cli/`, which the tarball
  * never sees.
  *
+ *   npm run cli -- ask
  *   npm run cli -- nearby 48.1173 -1.6778 3000 --fuel gazole --open-now
  *   npm run cli -- stats gazole --department 35
  *   npm run cli -- find --city rennes --fuel e85 --sort price --limit 5
@@ -12,7 +13,16 @@
 
 /* eslint-disable no-console */
 
+import { createInterface } from 'node:readline/promises';
+
 import { createFileCache } from './cache.js';
+import {
+  centreOf,
+  defaultAnswers,
+  parsePlace,
+  promptForAnswers,
+  type Answers,
+} from './cli-prompts.js';
 import { FuelPricesError } from './errors.js';
 import { FuelPricesClient, type FuelPricesOptions } from './fuel-prices.js';
 import { FUEL_TYPES, type FuelType, type StationMatch, type StationQuery } from './types.js';
@@ -23,6 +33,7 @@ Usage
   cli <command> [options]
 
 Commands
+  ask                       Interactive prompts, Enter accepts every default
   find                      Search with any combination of the options below
   nearby <lat> <lon> <m>    Stations within a radius, nearest first
   city <name>               Stations of a city
@@ -49,6 +60,7 @@ Filters (find, nearby, city, cp, dept, stats)
   --limit <n>
 
 Other
+  --defaults                With "ask", take every default without prompting
   --cache <file>            Persist the snapshot, and hydrate from it
   --json                    Machine-readable output
   --help
@@ -168,8 +180,10 @@ function toQuery(args: ParsedArgs): StationQuery {
 
 function clientOptions(args: ParsedArgs): FuelPricesOptions {
   const cachePath = text(args.flags, 'cache');
-  if (cachePath === undefined) return {};
+  return cachePath === undefined ? {} : cacheOptions(cachePath);
+}
 
+function cacheOptions(cachePath: string): FuelPricesOptions {
   return {
     cache: createFileCache(cachePath),
     onCacheError: (error) => console.error(`cache: ${error.message}`),
@@ -228,6 +242,67 @@ function printMatches(matches: StationMatch[], client: FuelPricesClient, asJson:
   console.log(`\n${String(matches.length)} station(s), out of ${String(client.size)} cached.`);
 }
 
+/** Binds the question flow to the terminal. */
+async function askInteractively(): Promise<Answers> {
+  if (!process.stdin.isTTY) {
+    throw fail('`ask` needs a terminal. Use `find` with flags when piping, or pass --defaults.');
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await promptForAnswers((question) => rl.question(question));
+  } finally {
+    rl.close();
+  }
+}
+
+/** Ctrl+C and Ctrl+D reach us as an AbortError; they mean "cancelled", not "crashed". */
+function isCancellation(error: unknown): boolean {
+  return (
+    error instanceof Error && (error.name === 'AbortError' || error.name === 'ExitPromptError')
+  );
+}
+
+/**
+ * Runs the query the answers describe. A city name is resolved against the
+ * dataset itself — the centre of its stations — rather than a built-in gazetteer.
+ */
+async function runAnswers(
+  answers: Answers,
+  client: FuelPricesClient,
+  asJson: boolean,
+): Promise<number> {
+  let near = parsePlace(answers.place);
+
+  if (near === null) {
+    const inCity = await client.findStations({ city: answers.place });
+    const located = inCity.map((match) => match.station.location).filter((point) => point !== null);
+
+    near = centreOf(located);
+    if (near === null) {
+      console.error(`No station found in "${answers.place}", so it cannot be used as a centre.`);
+      return 1;
+    }
+    console.log(
+      `${answers.place}: ${String(inCity.length)} stations, centred on ` +
+        `${near.latitude.toFixed(4)},${near.longitude.toFixed(4)}`,
+    );
+  }
+
+  const matches = await client.findStations({
+    near,
+    radiusMeters: answers.radiusMeters,
+    ...(answers.fuels.length === 0 ? {} : { fuel: answers.fuels }),
+    ...(answers.openNow ? { openAt: new Date() } : {}),
+    ...(answers.maxPriceAge === undefined ? {} : { maxPriceAge: answers.maxPriceAge }),
+    sort: answers.sort,
+    limit: answers.limit,
+  });
+
+  printMatches(matches, client, asJson);
+  return 0;
+}
+
 async function run(argv: string[]): Promise<number> {
   const args = parseArgs(argv);
   const asJson = args.flags.get('json') === true;
@@ -237,8 +312,31 @@ async function run(argv: string[]): Promise<number> {
     return 0;
   }
 
-  const client = new FuelPricesClient(clientOptions(args));
   const started = Date.now();
+
+  // `ask` builds its own client: the cache file is one of the questions.
+  if (args.command === 'ask') {
+    const answers =
+      args.flags.get('defaults') === true
+        ? defaultAnswers()
+        : await askInteractively().catch((error: unknown) => {
+            if (!isCancellation(error)) throw error;
+            console.log('\nCancelled.');
+            return null;
+          });
+    if (answers === null) return 0;
+
+    const interactive = new FuelPricesClient(
+      answers.cachePath === undefined ? {} : cacheOptions(answers.cachePath),
+    );
+    if (!asJson) console.log('\nReading the dataset…');
+
+    const code = await runAnswers(answers, interactive, asJson);
+    if (!asJson) console.log(`(${String(Date.now() - started)} ms)`);
+    return code;
+  }
+
+  const client = new FuelPricesClient(clientOptions(args));
 
   switch (args.command) {
     case 'find': {
