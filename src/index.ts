@@ -10,6 +10,14 @@ export { VERSION } from './version.js';
 export { FuelPricesError, type FuelPricesErrorCode } from './errors.js';
 
 export {
+  CACHE_VERSION,
+  createFileCache,
+  type CacheEntry,
+  type CacheStore,
+  type FileCacheOptions,
+} from './cache.js';
+
+export {
   FuelPricesClient,
   getFuelPricesClient,
   resetFuelPricesClient,
@@ -28,6 +36,14 @@ export type {
   FuelType,
   GeoPoint,
   NearbyStation,
+  OpeningDay,
+  OpeningHours,
+  OpeningRange,
+  PriceStats,
   Station,
+  StationMatch,
+  StationQuery,
+  StationSort,
   SyncResult,
+  Weekday,
 } from './types.js';
