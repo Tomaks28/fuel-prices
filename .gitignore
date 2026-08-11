@@ -1,6 +1,9 @@
 node_modules/
 dist/
 dist-cli/
+
+# Default path of the CLI snapshot cache.
+.cache/
 coverage/
 
 *.log
