@@ -17,8 +17,10 @@ declarations.
 
 ## Development
 
-Contributing needs Node.js >= 22.18 (tsdown and semantic-release require it), even though the
-published package itself supports Node >= 18.
+The toolchain version is pinned in [`.nvmrc`](./.nvmrc) and CI reads it from there, so `nvm use`
+is enough to match it. Node >= 24.15 is the real floor for contributors (tsdown and the
+semantic-release plugins), even though the published package supports Node >= 18 — which the
+`compat` CI job verifies on every run.
 
 ```sh
 npm run check   # typecheck + lint + format check
