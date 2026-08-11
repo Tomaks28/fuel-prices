@@ -280,6 +280,32 @@ A hand-driving harness for every code path, against the real feed. It is **not**
 published: it builds through [`tsdown.cli.config.ts`](./tsdown.cli.config.ts) into
 the git-ignored `dist-cli/`, and the tarball ships `dist/` only.
 
+The quickest way in is the interactive mode: every question carries a default,
+so pressing Enter through it searches **20 km around Paris**.
+
+```sh
+npm run cli -- ask            # prompts, Enter accepts each default
+npm run cli -- ask --defaults # skip the prompts entirely
+```
+
+```
+Where? "lat,lon" or a city name [Paris]:
+Radius in metres [20000]:
+Fuel(s), comma separated (gazole, sp95, sp98, e10, e85, gplc) [any]:
+Only stations open right now? [n]:
+Ignore quotes older than [7d]:
+Sort by (distance, price, updatedAt) [distance]:
+How many results [10]:
+Cache file ("none" to disable) [.cache/fuel-prices.json]:
+```
+
+Answer the first question with a city name and it is resolved against the dataset
+itself — the centre of that city's stations — rather than a built-in gazetteer.
+`ask` refuses to run without a terminal, so piping into it fails fast instead of
+hanging; use `find` with flags there.
+
+Or drive it with flags:
+
 ```sh
 npm run cli -- --help
 npm run cli -- nearby 48.1173 -1.6778 3000 --fuel gazole --sort price --limit 3
