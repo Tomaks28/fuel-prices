@@ -65,16 +65,6 @@ export const STATION_SELECT: string = [
   ]),
 ].join(',');
 
-/** Labels the feed uses in its availability lists, mapped to our fuel keys. */
-export const FUEL_LABELS: Readonly<Record<FuelType, string>> = {
-  gazole: 'Gazole',
-  sp95: 'SP95',
-  sp98: 'SP98',
-  e10: 'E10',
-  e85: 'E85',
-  gplc: 'GPLc',
-};
-
 /**
  * ODSQL predicate matching every station whose price changed after `since`.
  *
