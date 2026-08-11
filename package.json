@@ -13,6 +13,14 @@
   ],
   "license": "MIT",
   "author": "Tomaks28",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tomaks28/fuel-prices.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Tomaks28/fuel-prices/issues"
+  },
+  "homepage": "https://github.com/Tomaks28/fuel-prices#readme",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
