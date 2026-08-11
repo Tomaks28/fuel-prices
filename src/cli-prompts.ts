@@ -91,8 +91,8 @@ const NUMBER = /^-?\d+(?:\.\d+)?$/;
  * `"48.85,2.35"` as a point, or `null` when it reads as a city name.
  *
  * Split first, match second: one regex spanning both halves needed `\s*` on
- * either side of the separator, and a run of spaces then costs quadratic time —
- * 80 000 of them took 2.2 s.
+ * either side of the separator, which backtracks quadratically on a run of
+ * spaces.
  */
 export function parsePlace(raw: string): GeoPoint | null {
   const parts = raw.split(/[,;]/);
@@ -172,10 +172,19 @@ async function askText(
   hint?: string,
 ): Promise<string> {
   const { style } = prompt;
-  const painted = hint === undefined ? question : `${question} ${style.dim(`(${hint})`)}`;
-  const answer = (await prompt.ask(`${painted} [${style.cyan(fallback)}]: `)).trim();
+  const answer = (
+    await prompt.ask(`${withHint(question, hint, style)} [${style.cyan(fallback)}]: `)
+  ).trim();
 
   return answer === '' ? fallback : answer;
+}
+
+/** The hint, dim and in brackets, or nothing at all. */
+function withHint(question: string, hint: string | undefined, style: Style): string {
+  if (hint === undefined) return question;
+
+  const label = `(${hint})`;
+  return `${question} ${style.dim(label)}`;
 }
 
 async function askNumber(prompt: Prompter, question: string, fallback: number): Promise<number> {

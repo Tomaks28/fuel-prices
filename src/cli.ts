@@ -18,6 +18,7 @@ import { createInterface } from 'node:readline/promises';
 import { createFileCache } from './cache.js';
 import {
   createStyle,
+  formatElapsed,
   formatFooter,
   formatMatches,
   shouldUseColour,
@@ -337,15 +338,11 @@ async function reportLoad(
   );
 
   const result = await client.load();
-  const elapsed = Date.now() - started;
+  const elapsed = formatElapsed(Date.now() - started);
   const source =
     result.mode === 'cache' ? 'from the cache' : 'downloaded, and cached for next time';
 
-  console.log(
-    style.dim(
-      `${String(client.size)} stations ${source} in ${elapsed < 1000 ? `${String(elapsed)} ms` : `${(elapsed / 1000).toFixed(1)} s`}\n`,
-    ),
-  );
+  console.log(style.dim(`${String(client.size)} stations ${source} in ${elapsed}\n`));
 }
 
 async function run(argv: string[]): Promise<number> {

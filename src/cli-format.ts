@@ -119,7 +119,8 @@ export function formatMatches(matches: readonly StationMatch[], options: TableOp
 
   const rows = matches.map((match, index) => {
     const { station } = match;
-    const place = `${station.city} ${station.postalCode}${station.address === '' ? '' : ` · ${station.address}`}`;
+    const address = station.address === '' ? '' : ` · ${station.address}`;
+    const place = `${station.city} ${station.postalCode}${address}`;
 
     return [
       style.dim(pad(`${String(index + 1)}.`, 3)),
@@ -142,9 +143,8 @@ export function formatFooter(
   elapsedMs: number,
   style: Style,
 ): string {
-  return style.dim(
-    `\n${String(shown)} of ${cached.toLocaleString('en-GB').replace(/,/g, ' ')} cached stations · ${formatElapsed(elapsedMs)}`,
-  );
+  const total = cached.toLocaleString('en-GB').replaceAll(',', ' ');
+  return style.dim(`\n${String(shown)} of ${total} cached stations · ${formatElapsed(elapsedMs)}`);
 }
 
 function formatPrice(
@@ -191,7 +191,8 @@ function formatStatus(open: boolean | null, style: Style): string {
   return open ? style.green(pad('open', 8)) : style.red(pad('closed', 8));
 }
 
-function formatElapsed(ms: number): string {
+/** `47 ms` under a second, `13.3 s` over. */
+export function formatElapsed(ms: number): string {
   return ms < 1000 ? `${String(Math.round(ms))} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
