@@ -57,7 +57,7 @@
     "lint:fix": "eslint . --fix",
     "test": "jest",
     "test:coverage": "jest --coverage",
-    "check": "npm run typecheck && npm run lint && npm run format:check"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
   },
   "devDependencies": {
     "@arethetypeswrong/core": "^0.18.5",
