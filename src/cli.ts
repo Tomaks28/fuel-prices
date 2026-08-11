@@ -17,6 +17,13 @@ import { createInterface } from 'node:readline/promises';
 
 import { createFileCache } from './cache.js';
 import {
+  createStyle,
+  formatFooter,
+  formatMatches,
+  shouldUseColour,
+  type Style,
+} from './cli-format.js';
+import {
   centreOf,
   defaultAnswers,
   parsePlace,
@@ -63,6 +70,7 @@ Other
   --defaults                With "ask", take every default without prompting
   --cache <file>            Persist the snapshot, and hydrate from it
   --json                    Machine-readable output
+  --no-color                Never colour, whatever the terminal says
   --help
 `;
 
@@ -190,67 +198,68 @@ function cacheOptions(cachePath: string): FuelPricesOptions {
   };
 }
 
+interface PrintContext {
+  style: Style;
+  asJson: boolean;
+  /** Fuel the results are sorted on, if any: its column is highlighted. */
+  highlight: FuelType | undefined;
+  elapsedMs: () => number;
+}
+
+/**
+ * `stdout.columns` is undefined when the output is piped, where `COLUMNS` often
+ * still is not — and `Number(undefined)` is NaN, which `??` would happily keep.
+ */
+function terminalWidth(): number {
+  const fromEnv = Number(process.env.COLUMNS);
+  return process.stdout.columns ?? (Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 100);
+}
+
+/** The fuel worth highlighting: the sort key, or the only one asked for. */
+function highlightOf(query: StationQuery): FuelType | undefined {
+  const fuels = query.fuel === undefined ? [] : [query.fuel].flat();
+  if (query.sort === 'price') return fuels[0];
+  return fuels.length === 1 ? fuels[0] : undefined;
+}
+
 function fail(message: string): FuelPricesError {
   return new FuelPricesError(message, { code: 'invalid_argument' });
 }
 
-function formatPrices(match: StationMatch): string {
-  const prices = FUEL_TYPES.map((fuel) => {
-    const price = match.station.prices[fuel];
-    return price === undefined ? null : `${fuel}=${price.price.toFixed(3)}`;
-  }).filter((entry) => entry !== null);
-
-  return prices.length === 0 ? 'no price' : prices.join(' ');
-}
-
-/** `2026-08-11T09:47:00.000Z (3 h ago)`, or `never`. */
-function formatAge(updatedAt: string | null): string {
-  if (updatedAt === null) return 'never';
-
-  const ageMs = Date.now() - Date.parse(updatedAt);
-  const hours = Math.round(ageMs / (60 * 60 * 1000));
-  const label = hours < 48 ? `${String(hours)} h` : `${String(Math.round(hours / 24))} d`;
-
-  return `${updatedAt} (${label} ago)`;
-}
-
-function printMatches(matches: StationMatch[], client: FuelPricesClient, asJson: boolean): void {
-  if (asJson) {
+function printMatches(
+  matches: StationMatch[],
+  client: FuelPricesClient,
+  context: PrintContext,
+): void {
+  if (context.asJson) {
     console.log(JSON.stringify(matches, null, 2));
     return;
   }
 
-  if (matches.length === 0) {
-    console.log('No station matched.');
-    return;
-  }
-
   const now = new Date();
-  for (const match of matches) {
-    const { station } = match;
-    const distance =
-      match.distanceMeters === null ? '' : `${String(Math.round(match.distanceMeters))} m  `;
-    const open = client.isOpenAt(station, now);
-    const openLabel = open === null ? 'hours unknown' : open ? 'open' : 'closed';
+  const lines = formatMatches(matches, {
+    style: context.style,
+    width: terminalWidth(),
+    isOpen: (match) => client.isOpenAt(match.station, now),
+    ...(context.highlight === undefined ? {} : { highlight: context.highlight }),
+    now: now.getTime(),
+  });
 
-    console.log(
-      `${distance}${station.city} ${station.postalCode} [${station.id}] ${station.kind}, ${openLabel}`,
-    );
-    console.log(`    ${formatPrices(match)}`);
-    console.log(`    ${station.address}  (updated ${formatAge(station.updatedAt)})`);
+  for (const line of lines) console.log(line);
+  if (matches.length > 0) {
+    console.log(formatFooter(matches.length, client.size, context.elapsedMs(), context.style));
   }
-  console.log(`\n${String(matches.length)} station(s), out of ${String(client.size)} cached.`);
 }
 
 /** Binds the question flow to the terminal. */
-async function askInteractively(): Promise<Answers> {
+async function askInteractively(style: Style): Promise<Answers> {
   if (!process.stdin.isTTY) {
     throw fail('`ask` needs a terminal. Use `find` with flags when piping, or pass --defaults.');
   }
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    return await promptForAnswers((question) => rl.question(question));
+    return await promptForAnswers((question) => rl.question(question), style);
   } finally {
     rl.close();
   }
@@ -270,7 +279,7 @@ function isCancellation(error: unknown): boolean {
 async function runAnswers(
   answers: Answers,
   client: FuelPricesClient,
-  asJson: boolean,
+  context: PrintContext,
 ): Promise<number> {
   let near = parsePlace(answers.place);
 
@@ -284,12 +293,14 @@ async function runAnswers(
       return 1;
     }
     console.log(
-      `${answers.place}: ${String(inCity.length)} stations, centred on ` +
-        `${near.latitude.toFixed(4)},${near.longitude.toFixed(4)}`,
+      context.style.dim(
+        `${answers.place}: ${String(inCity.length)} stations, centred on ` +
+          `${near.latitude.toFixed(4)},${near.longitude.toFixed(4)}`,
+      ),
     );
   }
 
-  const matches = await client.findStations({
+  const query: StationQuery = {
     near,
     radiusMeters: answers.radiusMeters,
     ...(answers.fuels.length === 0 ? {} : { fuel: answers.fuels }),
@@ -297,15 +308,57 @@ async function runAnswers(
     ...(answers.maxPriceAge === undefined ? {} : { maxPriceAge: answers.maxPriceAge }),
     sort: answers.sort,
     limit: answers.limit,
-  });
+  };
 
-  printMatches(matches, client, asJson);
+  printMatches(await client.findStations(query), client, {
+    ...context,
+    highlight: highlightOf(query),
+  });
   return 0;
+}
+
+/**
+ * Loads the dataset out loud. A cold read is a server-side export that has been
+ * measured anywhere between 13 s and 73 s, which is far too long to spend in
+ * silence; a cached one is instant and worth confirming too.
+ */
+async function reportLoad(
+  client: FuelPricesClient,
+  style: Style,
+  cachePath: string | undefined,
+): Promise<void> {
+  const started = Date.now();
+  console.log(
+    style.dim(
+      cachePath === undefined
+        ? '\nReading the whole dataset (no cache; this can take a minute)…'
+        : `\nReading the dataset (cache: ${cachePath})…`,
+    ),
+  );
+
+  const result = await client.load();
+  const elapsed = Date.now() - started;
+  const source =
+    result.mode === 'cache' ? 'from the cache' : 'downloaded, and cached for next time';
+
+  console.log(
+    style.dim(
+      `${String(client.size)} stations ${source} in ${elapsed < 1000 ? `${String(elapsed)} ms` : `${(elapsed / 1000).toFixed(1)} s`}\n`,
+    ),
+  );
 }
 
 async function run(argv: string[]): Promise<number> {
   const args = parseArgs(argv);
   const asJson = args.flags.get('json') === true;
+  const style = createStyle(
+    !asJson &&
+      shouldUseColour(
+        process.env,
+        process.stdout.isTTY === true,
+        args.flags.get('no-color') === true,
+      ),
+  );
 
   if (args.flags.get('help') === true || args.command === 'help') {
     console.log(USAGE);
@@ -313,13 +366,19 @@ async function run(argv: string[]): Promise<number> {
   }
 
   const started = Date.now();
+  const printContext: PrintContext = {
+    style,
+    asJson,
+    highlight: undefined,
+    elapsedMs: () => Date.now() - started,
+  };
 
   // `ask` builds its own client: the cache file is one of the questions.
   if (args.command === 'ask') {
     const answers =
       args.flags.get('defaults') === true
         ? defaultAnswers()
-        : await askInteractively().catch((error: unknown) => {
+        : await askInteractively(style).catch((error: unknown) => {
             if (!isCancellation(error)) throw error;
             console.log('\nCancelled.');
             return null;
@@ -329,18 +388,20 @@ async function run(argv: string[]): Promise<number> {
     const interactive = new FuelPricesClient(
       answers.cachePath === undefined ? {} : cacheOptions(answers.cachePath),
     );
-    if (!asJson) console.log('\nReading the dataset…');
+    if (!asJson) await reportLoad(interactive, style, answers.cachePath);
 
-    const code = await runAnswers(answers, interactive, asJson);
-    if (!asJson) console.log(`(${String(Date.now() - started)} ms)`);
-    return code;
+    return runAnswers(answers, interactive, printContext);
   }
 
   const client = new FuelPricesClient(clientOptions(args));
 
   switch (args.command) {
     case 'find': {
-      printMatches(await client.findStations(toQuery(args)), client, asJson);
+      const query = toQuery(args);
+      printMatches(await client.findStations(query), client, {
+        ...printContext,
+        highlight: highlightOf(query),
+      });
       break;
     }
 
@@ -349,12 +410,15 @@ async function run(argv: string[]): Promise<number> {
       if (latitude === undefined || longitude === undefined || radius === undefined) {
         throw fail('nearby expects <lat> <lon> <metres>.');
       }
-      const matches = await client.findStations({
+      const query: StationQuery = {
         ...toQuery(args),
         near: { latitude: Number(latitude), longitude: Number(longitude) },
         radiusMeters: Number(radius),
+      };
+      printMatches(await client.findStations(query), client, {
+        ...printContext,
+        highlight: highlightOf(query),
       });
-      printMatches(matches, client, asJson);
       break;
     }
 
@@ -366,7 +430,11 @@ async function run(argv: string[]): Promise<number> {
 
       const key =
         args.command === 'city' ? 'city' : args.command === 'cp' ? 'postalCode' : 'department';
-      printMatches(await client.findStations({ ...toQuery(args), [key]: value }), client, asJson);
+      const query: StationQuery = { ...toQuery(args), [key]: value };
+      printMatches(await client.findStations(query), client, {
+        ...printContext,
+        highlight: highlightOf(query),
+      });
       break;
     }
 
@@ -440,7 +508,6 @@ async function run(argv: string[]): Promise<number> {
       return 1;
   }
 
-  if (!asJson) console.log(`(${String(Date.now() - started)} ms)`);
   return 0;
 }
 
