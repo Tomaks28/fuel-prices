@@ -103,18 +103,30 @@ semantic-release plugins), even though the published package supports Node >= 18
 `compat` CI job verifies on every run.
 
 ```sh
-npm run check   # typecheck + lint + format check
+npm run check   # typecheck + lint + format check + tests
 npm run build   # dual ESM/CJS bundle into dist/
 ```
 
-| Script              | Purpose                                            |
-| ------------------- | -------------------------------------------------- |
-| `build`             | Bundle ESM + CJS + `.d.ts` via tsdown              |
-| `build:verify`      | Build, then gate on `publint` + `arethetypeswrong` |
-| `typecheck`         | `tsc --noEmit` (strict, type-aware)                |
-| `lint` / `lint:fix` | ESLint flat config, type-aware rules               |
-| `format` / `:check` | Prettier                                           |
-| `check`             | All of the above, in the order CI runs them        |
+| Script               | Purpose                                            |
+| -------------------- | -------------------------------------------------- |
+| `build`              | Bundle ESM + CJS + `.d.ts` via tsdown              |
+| `build:verify`       | Build, then gate on `publint` + `arethetypeswrong` |
+| `typecheck`          | `tsc --noEmit` (strict, type-aware)                |
+| `lint` / `lint:fix`  | ESLint flat config, type-aware rules               |
+| `format` / `:check`  | Prettier                                           |
+| `test` / `:coverage` | Jest suite, `lcov` report into `coverage/`         |
+| `check`              | All of the above, in the order CI runs them        |
+
+### Tests
+
+Suites sit next to the code they cover (`src/**/*.test.ts`) and never touch the network: the
+transport is injected through the `fetch` option, so a test rewrites the feed between two syncs
+and asserts on what the client did with it. Fixtures live in
+[`src/test-helpers.ts`](./src/test-helpers.ts).
+
+Jest runs through ts-jest, which transpiles to CJS — the package is ESM and its sources use
+`./foo.js` specifiers, which Jest cannot resolve natively without `--experimental-vm-modules`.
+[`jest.config.js`](./jest.config.js) maps the extension back off; nothing else is affected.
 
 ## Releasing
 
@@ -144,11 +156,12 @@ either of:
 
 ## Continuous integration
 
-| Workflow       | Trigger                  | Does                                               |
-| -------------- | ------------------------ | -------------------------------------------------- |
-| `ci.yml`       | PRs, pushes to `main`    | `check`, `build:verify`, import on Node 18–24      |
-| `release.yml`  | pushes to `main`         | semantic-release, npm publish with provenance      |
-| `security.yml` | PRs, pushes, weekly cron | Trivy and Bearer, reported to GitHub code scanning |
+| Workflow       | Trigger                  | Does                                                           |
+| -------------- | ------------------------ | -------------------------------------------------------------- |
+| `ci.yml`       | PRs, pushes to `main`    | `check` (tests included), `build:verify`, import on Node 18–24 |
+| `release.yml`  | pushes to `main`         | semantic-release, npm publish with provenance                  |
+| `security.yml` | PRs, pushes, weekly cron | Trivy and Bearer, reported to GitHub code scanning             |
+| `sonar.yml`    | PRs, pushes to `main`    | Jest coverage, then the SonarQube Cloud analysis               |
 
 ## Data source
 
