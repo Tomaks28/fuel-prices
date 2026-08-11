@@ -1,12 +1,12 @@
-# Bearer scanner configuration.
-#
-# `src/cli.ts` is a development harness that prints gas-station records to a
-# terminal, which trips the "leakage of information in logger message" rule 18
-# times over. The records are public open data — addresses and prices published
-# by the French administration — there is no personal data and no credential in
-# them, and the CLI is never published (it builds into the git-ignored
-# `dist-cli/`). Scanning it reports nothing actionable, so it is skipped rather
-# than the rule being disabled repository-wide, which would also silence it for
-# the library code where it would matter.
-skip-path:
-  - src/cli.ts
+# Bearer scanner configuration. Picked up automatically: `--config-file`
+# defaults to `bearer.yml` in the scanned directory.
+scan:
+  # `src/cli.ts` is a development harness that prints gas-station records to a
+  # terminal, which trips the "leakage of information in logger message" rule 18
+  # times over. Those records are public open data — addresses and prices
+  # published by the French administration — with no personal data and no
+  # credential in them, and the CLI is never published (it builds into the
+  # git-ignored `dist-cli/`). Skipping the one file keeps the rule live for the
+  # library code, where a leak would actually matter.
+  skip-path:
+    - src/cli.ts
