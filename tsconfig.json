@@ -13,10 +13,8 @@
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
 
-    "declaration": true,
-    "emitDeclarationOnly": true,
-    "outDir": "dist",
-    "sourceMap": true,
+    // tsup owns the emit (js bundles + .d.ts); tsc is only a type gate here.
+    "noEmit": true,
     "isolatedModules": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
