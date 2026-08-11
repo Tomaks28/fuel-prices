@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The toolchain needs Node >= 22.18 (tsdown); the published package
+      # itself targets node18, which the `compat` job below verifies.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm run check
+
+      # Gates publint + arethetypeswrong. Needs --fail-on-warn (set in the
+      # script) or packaging problems are only warnings and CI stays green.
+      - run: npm run build:verify
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  compat:
+    name: Import on Node ${{ matrix.node }}
+    needs: check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20, 22, 24]
+    steps:
+      # package.json is required so Node resolves the "exports" map.
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+
+      - name: Import the ESM build
+        run: |
+          node -e "import('./dist/index.js').then(m => {
+            if (typeof m.VERSION !== 'string') throw new Error('ESM: VERSION missing');
+            console.log('ESM ok, VERSION =', m.VERSION);
+          })"
+
+      - name: Require the CJS build
+        run: |
+          node -e "
+            const m = require('./dist/index.cjs');
+            if (typeof m.VERSION !== 'string') throw new Error('CJS: VERSION missing');
+            console.log('CJS ok, VERSION =', m.VERSION);
+          "
