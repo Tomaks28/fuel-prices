@@ -74,6 +74,14 @@ jobs:
           output: bearer.sarif
           exit-code: '0'
 
+      # Bearer writes `results: null` when it finds nothing, which GitHub's
+      # SARIF validator rejects. Coerce it to the empty array it requires.
+      - name: Normalise empty results
+        if: always()
+        run: |
+          jq '.runs |= map(.results //= [])' bearer.sarif > bearer.normalised.sarif
+          mv bearer.normalised.sarif bearer.sarif
+
       - name: Upload SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@v4
