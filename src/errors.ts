@@ -12,6 +12,8 @@ export type FuelPricesErrorCode =
   | 'invalid_response'
   /** An argument handed to the SDK is unusable. */
   | 'invalid_argument'
+  /** A {@link CacheStore} could not keep the snapshot. Never fatal to a sync. */
+  | 'cache'
   /** The runtime lacks something the SDK needs, typically a global `fetch`. */
   | 'unsupported';
 
