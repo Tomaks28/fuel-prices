@@ -40,6 +40,34 @@ export type FuelPriceMap = Readonly<Partial<Record<FuelType, FuelPrice>>>;
 /** Outages indexed by fuel; only fuels the station does not currently sell. */
 export type FuelOutageMap = Readonly<Partial<Record<FuelType, FuelOutage>>>;
 
+/** ISO weekday: 1 is Monday, 7 is Sunday. */
+export type Weekday = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+/** A window the station is open, as `HH:MM` local French time. */
+export interface OpeningRange {
+  readonly opensAt: string;
+  readonly closesAt: string;
+}
+
+/**
+ * One day of the week.
+ *
+ * `closed: false` with no `ranges` means the feed says nothing about that day —
+ * roughly half of them. Do not read it as "open".
+ */
+export interface OpeningDay {
+  readonly weekday: Weekday;
+  readonly closed: boolean;
+  readonly ranges: readonly OpeningRange[];
+}
+
+/** Weekly schedule, as published by the station. */
+export interface OpeningHours {
+  /** Unattended pump available around the clock. */
+  readonly automat24h: boolean;
+  readonly days: readonly OpeningDay[];
+}
+
 /** A gas station and its current prices, as exposed by this SDK. */
 export interface Station {
   /** Dataset identifier, stable across syncs (the station's `id`). */
@@ -56,6 +84,8 @@ export interface Station {
   readonly open24h: boolean;
   /** Free-form service labels, as worded by the feed ("Station de lavage", …). */
   readonly services: readonly string[];
+  /** Weekly schedule, `null` for the ~14 % of stations that publish none. */
+  readonly openingHours: OpeningHours | null;
   readonly prices: FuelPriceMap;
   readonly outages: FuelOutageMap;
   /** Most recent price timestamp across all fuels, ISO-8601 UTC. */
@@ -69,10 +99,71 @@ export interface NearbyStation {
   readonly distanceMeters: number;
 }
 
+/** Distribution of one fuel's price across a set of stations. */
+export interface PriceStats {
+  readonly fuel: FuelType;
+  /** Stations selling that fuel in the set. Never 0 — `null` is returned instead. */
+  readonly count: number;
+  readonly min: number;
+  readonly max: number;
+  readonly mean: number;
+  readonly median: number;
+  /** Most recent price timestamp in the set, ISO-8601 UTC. */
+  readonly updatedAt: string | null;
+}
+
+/** How to order the results of a query. */
+export type StationSort = 'distance' | 'price' | 'updatedAt';
+
+/**
+ * Criteria of a {@link Station} search. Every field is optional and they
+ * combine as a logical AND; an empty query returns the whole cache.
+ */
+export interface StationQuery {
+  /** Centre of a radius search. Requires `radiusMeters`. */
+  readonly near?: GeoPoint;
+  /** Radius in metres, inclusive. Requires `near`. */
+  readonly radiusMeters?: number;
+  /** Case-, accent- and separator-insensitive city match. */
+  readonly city?: string;
+  readonly postalCode?: string;
+  /** Département INSEE code, e.g. `"35"` or `"2A"`. */
+  readonly department?: string;
+  /** Keeps stations selling every listed fuel. */
+  readonly fuel?: FuelType | readonly FuelType[];
+  /** Upper bound on the price of `fuel`. Requires a single `fuel`. */
+  readonly maxPrice?: number;
+  readonly kind?: 'road' | 'highway';
+  /** Keeps stations the feed reports as open at that instant. */
+  readonly openAt?: Date;
+  /**
+   * Drops stations quoting a stale price, in ms.
+   *
+   * Measured against the prices of `fuel` when the query names any, and against
+   * the station's freshest price otherwise — the two differ far more than they
+   * look: a station can quote gazole hourly and E85 twice a year. A price the
+   * feed left undated can never satisfy this, so it drops out.
+   */
+  readonly maxPriceAge?: number;
+  /** `distance` requires `near`, `price` requires a single `fuel`. */
+  readonly sort?: StationSort;
+  readonly limit?: number;
+}
+
+/** A station matched by {@link StationQuery}. */
+export interface StationMatch {
+  readonly station: Station;
+  /** Distance from `near`, in metres; `null` when the query had no centre. */
+  readonly distanceMeters: number | null;
+}
+
 /** What a call to `load`, `refresh` or `sync` did. */
 export interface SyncResult {
-  /** `full` re-reads the whole dataset, `incremental` only the price updates. */
-  readonly mode: 'full' | 'incremental';
+  /**
+   * `full` re-read the whole dataset, `incremental` only the price updates, and
+   * `cache` hydrated from a {@link CacheStore} without touching the network.
+   */
+  readonly mode: 'full' | 'incremental' | 'cache';
   /** Lower bound used for an incremental sync, `null` for a full one. */
   readonly since: string | null;
   /** ISO-8601 UTC timestamp the request was issued at. */

@@ -39,7 +39,10 @@ describe('STATION_SELECT', () => {
     expect(fields).not.toContain('prix');
     expect(fields).not.toContain('rupture');
     expect(fields).not.toContain('services');
-    expect(fields).not.toContain('horaires');
+  });
+
+  it('keeps `horaires`, the one blob nothing else duplicates', () => {
+    expect(STATION_SELECT.split(',')).toContain('horaires');
   });
 
   it('lists every field exactly once', () => {

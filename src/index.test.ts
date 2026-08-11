@@ -14,10 +14,12 @@ afterEach(() => {
 describe('the public surface', () => {
   it('exports exactly what it means to', () => {
     expect(Object.keys(sdk).sort()).toEqual([
+      'CACHE_VERSION',
       'FUEL_TYPES',
       'FuelPricesClient',
       'FuelPricesError',
       'VERSION',
+      'createFileCache',
       'getFuelPricesClient',
       'resetFuelPricesClient',
     ]);

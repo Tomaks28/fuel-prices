@@ -33,6 +33,8 @@ interface RawStationColumns {
   code_region: string | null;
   /** `Oui` / `Non`. */
   horaires_automate_24_24: string | null;
+  /** Weekly schedule, as a stringified JSON blob. */
+  horaires: string | null;
   services_service: string[] | null;
 }
 
@@ -40,9 +42,10 @@ interface RawStationColumns {
 export type RawStationRecord = RawStationColumns & RawFuelColumns;
 
 /**
- * Fields the SDK reads. Asking for them explicitly halves the payload: the raw
- * dataset also carries `prix`, `rupture`, `horaires` and `services` as
- * stringified JSON duplicating the flattened columns below.
+ * Fields the SDK reads. Asking for them explicitly trims the payload by half:
+ * the raw dataset also carries `prix`, `rupture` and `services` as stringified
+ * JSON duplicating the flattened columns below. `horaires` is the exception —
+ * nothing else carries the weekly schedule, so it is read and parsed.
  */
 export const STATION_SELECT: string = [
   'id',
@@ -56,6 +59,7 @@ export const STATION_SELECT: string = [
   'region',
   'code_region',
   'horaires_automate_24_24',
+  'horaires',
   'services_service',
   ...FUEL_TYPES.flatMap((fuel) => [
     `${fuel}_prix`,

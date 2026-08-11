@@ -66,6 +66,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Both steps read `bearer.yml` from the repository root, which is the
+      # scanner's own default for --config-file.
       - name: Scan and report
         uses: bearer/bearer-action@828eeb928ce2f4a7ca5ed57fb8b59508cb8c79bc # v2
         with:

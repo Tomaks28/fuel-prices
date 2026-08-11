@@ -26,6 +26,7 @@ export function rawRecord(
     region: 'Bretagne',
     code_region: '53',
     horaires_automate_24_24: 'Oui',
+    horaires: null,
     services_service: ['Bar', 'Laverie'],
 
     gazole_prix: 1.9,

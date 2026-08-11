@@ -26,6 +26,7 @@ export default {
     'src/**/*.ts',
     '!src/**/*.test.ts',
     '!src/test-helpers.ts',
+    '!src/cli.ts',
     '!src/version.ts',
   ],
   coverageReporters: ['text-summary', 'lcov'],
