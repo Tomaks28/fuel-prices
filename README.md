@@ -51,9 +51,76 @@ Every getter awaits the initial load, so calling `load()` yourself is optional.
 | `getStationsByFuel(fuel)`       | Stations selling that fuel, cheapest first          |
 | `getStationsNearby(point, m)`   | Stations within a radius in metres, nearest first   |
 | `getStationsUpdatedSince(date)` | Cached stations whose price moved after `date`      |
+| `findStations(query)`           | Every criterion below at once                       |
+| `getPriceStats(fuel, query?)`   | Price distribution over the matching stations       |
+| `isOpenAt(station, date)`       | `true`, `false`, or `null` when the feed is silent  |
 
 City names are not INSEE-coded upstream, so homonyms share a bucket — filter on `postalCode`
 when that matters. Lookups are served from indexes rebuilt on demand after a sync.
+
+### Composable search
+
+The getters above answer one question each. `findStations` answers the ones that
+cross them — "the cheapest E85 within 10 km, open right now":
+
+```ts
+const [cheapest] = await fuelPrices.findStations({
+  near: { latitude: 48.1173, longitude: -1.6778 },
+  radiusMeters: 10_000,
+  fuel: 'e85',
+  openAt: new Date(),
+  sort: 'price',
+  limit: 1,
+});
+
+console.log(cheapest?.station.city, cheapest?.station.prices.e85?.price, cheapest?.distanceMeters);
+```
+
+| Criterion                            | Effect                                               |
+| ------------------------------------ | ---------------------------------------------------- |
+| `near` + `radiusMeters`              | Radius search, inclusive; both are required together |
+| `city` / `postalCode` / `department` | Place filters, city matching as above                |
+| `fuel`                               | One fuel, or a list the station must sell all of     |
+| `maxPrice`                           | Price ceiling; needs exactly one `fuel`              |
+| `kind`                               | `road` or `highway`                                  |
+| `openAt`                             | Stations the feed reports as open at that instant    |
+| `sort`                               | `distance`, `price` or `updatedAt`                   |
+| `limit`                              | Caps the result set                                  |
+
+Criteria are ANDed, an empty query returns everything, and each match carries
+`distanceMeters` when the query had a centre. The whole thing runs against the
+in-memory snapshot — no request once it is warm. Contradictory queries throw
+`invalid_argument` **before** the dataset is loaded, so a typo costs nothing.
+
+### Price statistics
+
+A single price means little: gazole spans 1.244 to 2.800 nationally. `getPriceStats`
+puts one in context, over the whole country or over whatever the same query narrows
+it to.
+
+```ts
+const national = await fuelPrices.getPriceStats('gazole');
+const local = await fuelPrices.getPriceStats('gazole', { department: '35' });
+// { fuel: 'gazole', count: 145, min: 2.049, median: 2.105, mean: 2.135, max: 2.453, updatedAt }
+```
+
+It returns `null` — not a row of zeroes — when nothing in the set sells that fuel.
+
+### Opening hours
+
+`station.openingHours` holds the weekly schedule the station publishes, and
+`isOpenAt` reads it in `Europe/Paris`, which is what the hours are expressed in.
+
+```ts
+fuelPrices.isOpenAt(station, new Date()); // true | false | null
+```
+
+**`null` is not a "no".** Of the 9 807 stations, 1 354 publish no schedule at all,
+and roughly half of the day entries in the rest carry neither hours nor a closed
+flag. `null` means the feed does not say. `findStations({ openAt })` keeps only
+the stations it can positively vouch for, so those drop out of the results.
+
+Unattended 24/7 pumps (`openingHours.automat24h`) count as open at every hour.
 
 ### Searching around a point
 
@@ -95,6 +162,39 @@ const result = await fuelPrices.sync();
 // { mode: 'incremental', since, syncedAt, fetched, added, updated, unchanged, removed, total, stations }
 ```
 
+### Persisting between runs
+
+A cold start reads ~2 MB and takes 10-20 s server-side. Point the client at a
+`CacheStore` and a restarted process hydrates from disk instead, then asks only
+for the delta:
+
+```ts
+import { createFileCache, FuelPricesClient } from '@tomaks28/fuel-prices';
+
+const fuelPrices = new FuelPricesClient({
+  cache: createFileCache('.cache/fuel-prices.json'),
+  cacheMaxAgeMs: 24 * 60 * 60 * 1000, // older than this, the snapshot is ignored
+  onCacheError: (error) => logger.warn(error),
+});
+
+await fuelPrices.load(); // { mode: 'cache' } on a hit — no request at all
+await fuelPrices.sync(); // delta since the *persisted* sync time
+```
+
+Measured on the real feed: **13.3 s cold, 61 ms warm.** The snapshot file is
+around 13 MB of JSON.
+
+The file cache writes to a temporary sibling and renames it into place, so a
+process killed mid-write leaves the previous snapshot intact. A missing,
+truncated, foreign or out-of-date file is a cache miss, not an error. Writes that
+fail never fail a sync — they surface through `onCacheError` and nowhere else, so
+pass one if you care.
+
+`CacheStore` is a two-method interface (`read`, `write`, plus an optional
+`clear`), so Redis or a shared volume plugs in the same way; `createFileCache`
+is just the implementation that ships. `node:fs` is imported dynamically, so the
+SDK carries no static filesystem dependency.
+
 ### Options and errors
 
 ```ts
@@ -102,6 +202,9 @@ const client = new FuelPricesClient({
   timeoutMs: 60_000, // per attempt
   retries: 2, // retried on 408/425/429/5xx and network failures, honouring Retry-After
   syncOverlapMs: 5 * 60 * 1000,
+  cache: createFileCache('.cache/fuel-prices.json'),
+  cacheMaxAgeMs: 24 * 60 * 60 * 1000,
+  onCacheError: (error) => logger.warn(error),
   fetch: myFetch, // stub or instrument the transport
   baseUrl,
   dataset, // point at another Opendatasoft portal
@@ -109,10 +212,12 @@ const client = new FuelPricesClient({
 ```
 
 Everything throws `FuelPricesError`, carrying a `code` (`http`, `network`, `timeout`, `aborted`,
-`invalid_response`, `invalid_argument`, `unsupported`) plus `status` / `apiCode` when the failure
-came from the API. All network methods accept an `AbortSignal`.
+`invalid_response`, `invalid_argument`, `cache`, `unsupported`) plus `status` / `apiCode` when the
+failure came from the API. All network methods accept an `AbortSignal`.
 
-Out of scope for now: opening hours (the raw `horaires` field is not parsed).
+Out of scope: price history and trends. The portal publishes no such dataset —
+`prix-carburants-quotidien` is a daily snapshot in long format, not an archive — so trends would
+mean accumulating snapshots yourself.
 
 ## Development
 
@@ -134,7 +239,27 @@ npm run build   # dual ESM/CJS bundle into dist/
 | `lint` / `lint:fix`  | ESLint flat config, type-aware rules               |
 | `format` / `:check`  | Prettier                                           |
 | `test` / `:coverage` | Jest suite, `lcov` report into `coverage/`         |
+| `cli`                | Development CLI against the live feed              |
 | `check`              | All of the above, in the order CI runs them        |
+
+### Development CLI
+
+A hand-driving harness for every code path, against the real feed. It is **not**
+published: it builds through [`tsdown.cli.config.ts`](./tsdown.cli.config.ts) into
+the git-ignored `dist-cli/`, and the tarball ships `dist/` only.
+
+```sh
+npm run cli -- --help
+npm run cli -- nearby 48.1173 -1.6778 3000 --fuel gazole --sort price --limit 3
+npm run cli -- find --city rennes --fuel e85 --open-now --cache .cache/stations.json
+npm run cli -- stats gazole --department 35
+npm run cli -- sync --cache .cache/stations.json
+npm run cli -- info
+```
+
+Every command takes the `findStations` filters, plus `--cache <file>` to exercise
+persistence and `--json` for raw output. Pass `--cache` twice in a row to feel the
+difference the snapshot makes.
 
 ### Tests
 
