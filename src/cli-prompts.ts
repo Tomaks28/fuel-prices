@@ -84,19 +84,38 @@ interface Prompter {
   style: Style;
 }
 
-/** `"48.85,2.35"` as a point, or `null` when it reads as a city name. */
-export function parsePlace(raw: string): GeoPoint | null {
-  const match = /^\s*(-?\d+(?:\.\d+)?)\s*[,;]\s*(-?\d+(?:\.\d+)?)\s*$/.exec(raw);
-  if (match === null) return null;
+/** A decimal number, anchored and with nothing optional around it to backtrack on. */
+const NUMBER = /^-?\d+(?:\.\d+)?$/;
 
-  return { latitude: Number(match[1]), longitude: Number(match[2]) };
+/**
+ * `"48.85,2.35"` as a point, or `null` when it reads as a city name.
+ *
+ * Split first, match second: one regex spanning both halves needed `\s*` on
+ * either side of the separator, and a run of spaces then costs quadratic time —
+ * 80 000 of them took 2.2 s.
+ */
+export function parsePlace(raw: string): GeoPoint | null {
+  const parts = raw.split(/[,;]/);
+  if (parts.length !== 2) return null;
+
+  const latitude = parseCoordinate(parts[0]);
+  const longitude = parseCoordinate(parts[1]);
+  if (latitude === null || longitude === null) return null;
+
+  return { latitude, longitude };
+}
+
+function parseCoordinate(raw: string | undefined): number | null {
+  const trimmed = raw?.trim() ?? '';
+  return NUMBER.test(trimmed) ? Number(trimmed) : null;
 }
 
 /** `7d`, `12h`, `90m`, `30s`, a bare number of ms, or `none`. */
 export function parseAge(raw: string): number | undefined {
   if (isNone(raw)) return undefined;
 
-  const match = /^\s*(\d+(?:\.\d+)?)\s*([smhd])?\s*$/i.exec(raw);
+  // Trimmed up front so the pattern needs no `\s*`, which is what backtracks.
+  const match = /^(\d+(?:\.\d+)?)([smhd])?$/i.exec(raw.trim());
   const amount = Number(match?.[1]);
   if (match === null || !Number.isFinite(amount)) {
     throw invalid(
