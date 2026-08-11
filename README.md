@@ -49,10 +49,30 @@ Every getter awaits the initial load, so calling `load()` yourself is optional.
 | `getStationsByPostalCode(code)` | Stations of a postal code                           |
 | `getStationsByDepartment(code)` | Stations of a département (INSEE code)              |
 | `getStationsByFuel(fuel)`       | Stations selling that fuel, cheapest first          |
+| `getStationsNearby(point, m)`   | Stations within a radius in metres, nearest first   |
 | `getStationsUpdatedSince(date)` | Cached stations whose price moved after `date`      |
 
 City names are not INSEE-coded upstream, so homonyms share a bucket — filter on `postalCode`
 when that matters. Lookups are served from indexes rebuilt on demand after a sync.
+
+### Searching around a point
+
+```ts
+const found = await fuelPrices.getStationsNearby({ latitude: 48.1173, longitude: -1.6778 }, 3000);
+
+for (const { station, distanceMeters } of found) {
+  console.log(Math.round(distanceMeters), station.city, station.prices.gazole?.price);
+}
+// 1105 Rennes 2.091
+// 1923 Rennes 2.213 …
+```
+
+The radius is in **metres** and inclusive, results come back nearest first, and
+`distanceMeters` is the unrounded great-circle (haversine) distance from the point you passed.
+A spherical Earth is off by up to ~0.5 % against WGS 84 — well under the precision of the
+coordinates the feed publishes, and monotonic, so it never reorders two stations. Stations the
+dataset gave no coordinates for cannot match and are left out. The scan is linear over the
+in-memory snapshot; no request is made once the cache is warm.
 
 ### Keeping it fresh
 
@@ -92,8 +112,7 @@ Everything throws `FuelPricesError`, carrying a `code` (`http`, `network`, `time
 `invalid_response`, `invalid_argument`, `unsupported`) plus `status` / `apiCode` when the failure
 came from the API. All network methods accept an `AbortSignal`.
 
-Out of scope for now: opening hours (the raw `horaires` field is not parsed) and geographic
-radius search.
+Out of scope for now: opening hours (the raw `horaires` field is not parsed).
 
 ## Development
 
@@ -103,18 +122,30 @@ semantic-release plugins), even though the published package supports Node >= 18
 `compat` CI job verifies on every run.
 
 ```sh
-npm run check   # typecheck + lint + format check
+npm run check   # typecheck + lint + format check + tests
 npm run build   # dual ESM/CJS bundle into dist/
 ```
 
-| Script              | Purpose                                            |
-| ------------------- | -------------------------------------------------- |
-| `build`             | Bundle ESM + CJS + `.d.ts` via tsdown              |
-| `build:verify`      | Build, then gate on `publint` + `arethetypeswrong` |
-| `typecheck`         | `tsc --noEmit` (strict, type-aware)                |
-| `lint` / `lint:fix` | ESLint flat config, type-aware rules               |
-| `format` / `:check` | Prettier                                           |
-| `check`             | All of the above, in the order CI runs them        |
+| Script               | Purpose                                            |
+| -------------------- | -------------------------------------------------- |
+| `build`              | Bundle ESM + CJS + `.d.ts` via tsdown              |
+| `build:verify`       | Build, then gate on `publint` + `arethetypeswrong` |
+| `typecheck`          | `tsc --noEmit` (strict, type-aware)                |
+| `lint` / `lint:fix`  | ESLint flat config, type-aware rules               |
+| `format` / `:check`  | Prettier                                           |
+| `test` / `:coverage` | Jest suite, `lcov` report into `coverage/`         |
+| `check`              | All of the above, in the order CI runs them        |
+
+### Tests
+
+Suites sit next to the code they cover (`src/**/*.test.ts`) and never touch the network: the
+transport is injected through the `fetch` option, so a test rewrites the feed between two syncs
+and asserts on what the client did with it. Fixtures live in
+[`src/test-helpers.ts`](./src/test-helpers.ts).
+
+Jest runs through ts-jest, which transpiles to CJS — the package is ESM and its sources use
+`./foo.js` specifiers, which Jest cannot resolve natively without `--experimental-vm-modules`.
+[`jest.config.js`](./jest.config.js) maps the extension back off; nothing else is affected.
 
 ## Releasing
 
@@ -144,11 +175,12 @@ either of:
 
 ## Continuous integration
 
-| Workflow       | Trigger                  | Does                                               |
-| -------------- | ------------------------ | -------------------------------------------------- |
-| `ci.yml`       | PRs, pushes to `main`    | `check`, `build:verify`, import on Node 18–24      |
-| `release.yml`  | pushes to `main`         | semantic-release, npm publish with provenance      |
-| `security.yml` | PRs, pushes, weekly cron | Trivy and Bearer, reported to GitHub code scanning |
+| Workflow       | Trigger                  | Does                                                           |
+| -------------- | ------------------------ | -------------------------------------------------------------- |
+| `ci.yml`       | PRs, pushes to `main`    | `check` (tests included), `build:verify`, import on Node 18–24 |
+| `release.yml`  | pushes to `main`         | semantic-release, npm publish with provenance                  |
+| `security.yml` | PRs, pushes, weekly cron | Trivy and Bearer, reported to GitHub code scanning             |
+| `sonar.yml`    | PRs, pushes to `main`    | Jest coverage, then the SonarQube Cloud analysis               |
 
 ## Data source
 

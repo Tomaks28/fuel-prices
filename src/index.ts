@@ -27,6 +27,7 @@ export type {
   FuelPriceMap,
   FuelType,
   GeoPoint,
+  NearbyStation,
   Station,
   SyncResult,
 } from './types.js';

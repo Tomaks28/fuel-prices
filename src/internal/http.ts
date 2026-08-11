@@ -128,12 +128,19 @@ export class DatasetClient {
   }
 
   async #fetchWithTimeout(url: string, signal: AbortSignal | undefined): Promise<Response> {
+    // Checked before dispatching: an already-aborted caller should cost zero
+    // requests, rather than rely on `fetch` rejecting on its own.
+    if (signal?.aborted) {
+      throw new FuelPricesError('The request was aborted by the caller.', {
+        code: 'aborted',
+        cause: signal.reason,
+      });
+    }
+
     const controller = new AbortController();
     const onAbort = (): void => {
       controller.abort(signal?.reason);
     };
-
-    if (signal?.aborted) onAbort();
     signal?.addEventListener('abort', onAbort, { once: true });
 
     const timer = setTimeout(() => {
