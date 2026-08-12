@@ -20,6 +20,8 @@ export const PROMPT_DEFAULTS = {
   place: 'Paris',
   radiusMeters: 20_000,
   fuels: [] as readonly FuelType[],
+  fetchBrands: false,
+  brands: [] as readonly string[],
   openNow: false,
   maxPriceAge: 7 * 24 * 60 * 60 * 1000,
   sort: 'distance' as StationSort,
@@ -32,6 +34,13 @@ export interface Answers {
   place: string;
   radiusMeters: number;
   fuels: FuelType[];
+  /**
+   * Go and find the network of each station. Off by default: it is the only
+   * question here that costs requests the prices do not already pay for.
+   */
+  fetchBrands: boolean;
+  /** Networks to keep, empty for all of them. Only asked when `fetchBrands`. */
+  brands: string[];
   openNow: boolean;
   maxPriceAge: number | undefined;
   sort: StationSort;
@@ -47,6 +56,8 @@ export function defaultAnswers(): Answers {
     place: PROMPT_DEFAULTS.place,
     radiusMeters: PROMPT_DEFAULTS.radiusMeters,
     fuels: [...PROMPT_DEFAULTS.fuels],
+    fetchBrands: PROMPT_DEFAULTS.fetchBrands,
+    brands: [...PROMPT_DEFAULTS.brands],
     openNow: PROMPT_DEFAULTS.openNow,
     maxPriceAge: PROMPT_DEFAULTS.maxPriceAge,
     sort: PROMPT_DEFAULTS.sort,
@@ -69,6 +80,17 @@ export async function promptForAnswers(
   answers.place = await askText(prompt, 'Where? "lat,lon" or a city name', answers.place);
   answers.radiusMeters = await askNumber(prompt, 'Radius in metres', answers.radiusMeters);
   answers.fuels = await askFuels(prompt, 'Fuel(s), comma separated', 'any');
+  answers.fetchBrands = await askYesNo(
+    prompt,
+    'Show the enseignes?',
+    answers.fetchBrands,
+    'the feed has none — a lookup, minutes on a cold cache',
+  );
+  // Only worth asking once the enseignes are being fetched: filtering on a brand
+  // nobody went to look up matches nothing.
+  if (answers.fetchBrands) {
+    answers.brands = await askBrands(prompt, 'Keep only which enseigne(s)?', 'any');
+  }
   answers.openNow = await askYesNo(prompt, 'Only stations open right now?', answers.openNow);
   answers.maxPriceAge = await askAge(prompt, 'Ignore quotes older than', answers.maxPriceAge);
   answers.sort = await askSort(prompt, 'Sort by', answers.sort);
@@ -126,6 +148,21 @@ export function parseAge(raw: string): number | undefined {
   const units: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
   const unit = match[2]?.toLowerCase();
   return unit === undefined ? amount : amount * (units[unit] ?? 1);
+}
+
+/**
+ * Networks to keep, empty for "do not even look them up".
+ *
+ * Spelling is the SDK's problem, not this one's: `total`, `TOTAL` and
+ * `Total Access` all reach the same stations, so anything non-empty goes through.
+ */
+export function parseBrands(raw: string): string[] {
+  if (isNone(raw) || raw.trim().toLowerCase() === 'any') return [];
+
+  return raw
+    .split(',')
+    .map((brand) => brand.trim())
+    .filter((brand) => brand !== '');
 }
 
 export function parseFuels(raw: string): FuelType[] {
@@ -197,8 +234,13 @@ async function askNumber(prompt: Prompter, question: string, fallback: number): 
   return parsed;
 }
 
-async function askYesNo(prompt: Prompter, question: string, fallback: boolean): Promise<boolean> {
-  const answer = (await askText(prompt, question, fallback ? 'y' : 'n')).toLowerCase();
+async function askYesNo(
+  prompt: Prompter,
+  question: string,
+  fallback: boolean,
+  hint?: string,
+): Promise<boolean> {
+  const answer = (await askText(prompt, question, fallback ? 'y' : 'n', hint)).toLowerCase();
   if (['y', 'yes', 'o', 'oui', 'true'].includes(answer)) return true;
   if (['n', 'no', 'non', 'false'].includes(answer)) return false;
 
@@ -207,6 +249,12 @@ async function askYesNo(prompt: Prompter, question: string, fallback: boolean): 
 
 async function askFuels(prompt: Prompter, question: string, fallback: string): Promise<FuelType[]> {
   return parseFuels(await askText(prompt, question, fallback, FUEL_TYPES.join(', ')));
+}
+
+async function askBrands(prompt: Prompter, question: string, fallback: string): Promise<string[]> {
+  // Two examples rather than the 50-odd networks, and spelling does not matter:
+  // `total` and `Total Access` reach the same stations.
+  return parseBrands(await askText(prompt, question, fallback, 'total, super u, …'));
 }
 
 async function askAge(

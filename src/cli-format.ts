@@ -37,6 +37,8 @@ const VERY_STALE_MS = 30 * DAY_MS;
 
 const MIN_PLACE_WIDTH = 16;
 const PRICE_WIDTH = 6;
+/** Fits `TotalEnergies`, the longest name the sanitizer produces. */
+const BRAND_WIDTH = 13;
 const NO_VALUE = '—';
 
 export function createStyle(enabled: boolean): Style {
@@ -90,6 +92,14 @@ export interface TableOptions {
   isOpen: (match: StationMatch) => boolean | null;
   /** Fuel the results are sorted on, highlighted in its column. */
   highlight?: FuelType | undefined;
+  /**
+   * Show the brand column even when nothing in the result set has one — which is
+   * what tells a caller who asked for brands that the lookup came back empty,
+   * rather than leaving them with a column that silently never appeared.
+   *
+   * Left unset, the column shows only when there is a brand to put in it.
+   */
+  brands?: boolean | undefined;
   /** Reference instant for the age column. */
   now?: number;
 }
@@ -104,12 +114,23 @@ export function formatMatches(matches: readonly StationMatch[], options: TableOp
   const now = options.now ?? Date.now();
 
   const hasDistance = matches.some((match) => match.distanceMeters !== null);
-  const fixed = 4 + (hasDistance ? 9 : 0) + fuels.length * (PRICE_WIDTH + 1) + 6 + 9 + 11;
+  // Without a brand source the column would be dashes all the way down, so it
+  // only exists once one is in play — asked for, or having produced something.
+  const hasBrand = options.brands === true || matches.some((match) => match.station.brand !== null);
+  const fixed =
+    4 +
+    (hasDistance ? 9 : 0) +
+    (hasBrand ? BRAND_WIDTH + 1 : 0) +
+    fuels.length * (PRICE_WIDTH + 1) +
+    6 +
+    9 +
+    11;
   const placeWidth = Math.max(MIN_PLACE_WIDTH, options.width - fixed);
 
   const header = [
     pad('#', 3),
     ...(hasDistance ? [padStart('DIST', 8)] : []),
+    ...(hasBrand ? [pad('BRAND', BRAND_WIDTH)] : []),
     pad('PLACE', placeWidth),
     ...fuels.map((fuel) => padStart(fuel.toUpperCase(), PRICE_WIDTH)),
     padStart('AGE', 5),
@@ -125,6 +146,7 @@ export function formatMatches(matches: readonly StationMatch[], options: TableOp
     return [
       style.dim(pad(`${String(index + 1)}.`, 3)),
       ...(hasDistance ? [padStart(formatDistance(match.distanceMeters), 8)] : []),
+      ...(hasBrand ? [formatBrand(station.brand, style)] : []),
       pad(truncate(place, placeWidth), placeWidth),
       ...fuels.map((fuel) => formatPrice(match, fuel, cheapest.get(fuel), options)),
       formatAge(station.updatedAt, now, style),
@@ -163,6 +185,11 @@ function formatPrice(
   if (isCheapest && highlighted) return options.style.green(options.style.bold(text));
   if (isCheapest) return options.style.green(text);
   return highlighted ? options.style.bold(text) : text;
+}
+
+function formatBrand(brand: string | null, style: Style): string {
+  if (brand === null) return style.dim(pad(NO_VALUE, BRAND_WIDTH));
+  return style.cyan(pad(truncate(brand, BRAND_WIDTH), BRAND_WIDTH));
 }
 
 function formatDistance(meters: number | null): string {

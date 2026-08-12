@@ -52,6 +52,8 @@ export function toStation(record: RawStationRecord): Station | null {
     region: toArea(record.code_region, record.region),
     location: toGeoPoint(record.geom),
     kind: record.pop === 'A' ? 'highway' : 'road',
+    // The feed has no brand column; a brand source fills this in afterwards.
+    brand: null,
     open24h: record.horaires_automate_24_24 === 'Oui',
     services: record.services_service ?? [],
     openingHours: parseOpeningHours(record.horaires),

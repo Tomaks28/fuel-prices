@@ -21,9 +21,21 @@ export {
   FuelPricesClient,
   getFuelPricesClient,
   resetFuelPricesClient,
+  type BrandsOptions,
   type FuelPricesOptions,
   type SyncOptions,
 } from './fuel-prices.js';
+
+export {
+  overpassBrands,
+  prixCarburantsBrands,
+  type BoundingBox,
+  type BrandSource,
+  type OverpassBrandsOptions,
+  type PrixCarburantsBrandsOptions,
+} from './brands.js';
+
+export { KNOWN_BRANDS, sanitizeBrand } from './internal/brand.js';
 
 export { FUEL_TYPES } from './types.js';
 

@@ -18,10 +18,14 @@ describe('the public surface', () => {
       'FUEL_TYPES',
       'FuelPricesClient',
       'FuelPricesError',
+      'KNOWN_BRANDS',
       'VERSION',
       'createFileCache',
       'getFuelPricesClient',
+      'overpassBrands',
+      'prixCarburantsBrands',
       'resetFuelPricesClient',
+      'sanitizeBrand',
     ]);
   });
 

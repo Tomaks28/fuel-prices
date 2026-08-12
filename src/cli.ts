@@ -15,6 +15,7 @@
 
 import { createInterface } from 'node:readline/promises';
 
+import { overpassBrands, prixCarburantsBrands, type BrandSource } from './brands.js';
 import { createFileCache } from './cache.js';
 import {
   createStyle,
@@ -58,6 +59,7 @@ Filters (find, nearby, city, cp, dept, stats)
   --city <name>             City, accent- and case-insensitive
   --cp <code>               Postal code
   --department <code>       Département INSEE code
+  --brand <a,b>             Networks, any of them; implies --brands
   --fuel <a,b>              Fuels the station must sell
   --max-price <eur>         Price ceiling, needs exactly one --fuel
   --kind <road|highway>
@@ -66,6 +68,15 @@ Filters (find, nearby, city, cp, dept, stats)
   --max-price-age <age>     Drop stale quotes: 90m, 12h, 7d, or plain ms
   --sort <distance|price|updatedAt>
   --limit <n>
+
+Brands (the feed publishes none; these go and fetch them)
+  --brands                  Name the network of each station
+  --brand-source <s>        overpass (default), 2aaz, or both
+  --overpass <url>          Interpreter to use; the main one often times out on
+                            a France-wide query, mirrors answer it
+
+                            "ask" asks whether to show them, and --brand-source
+                            and --overpass apply there as well
 
 Other
   --defaults                With "ask", take every default without prompting
@@ -174,6 +185,13 @@ function toQuery(args: ParsedArgs): StationQuery {
   if (text(flags, 'city') !== undefined) query.city = text(flags, 'city');
   if (text(flags, 'cp') !== undefined) query.postalCode = text(flags, 'cp');
   if (text(flags, 'department') !== undefined) query.department = text(flags, 'department');
+  const brandList = text(flags, 'brand');
+  if (brandList !== undefined) {
+    query.brand = brandList
+      .split(',')
+      .map((brand) => brand.trim())
+      .filter((brand) => brand !== '');
+  }
   if (fuelList !== undefined) query.fuel = fuelList;
   if (flags.has('max-price')) query.maxPrice = number(flags, 'max-price');
   if (text(flags, 'kind') !== undefined) query.kind = text(flags, 'kind');
@@ -189,7 +207,10 @@ function toQuery(args: ParsedArgs): StationQuery {
 
 function clientOptions(args: ParsedArgs): FuelPricesOptions {
   const cachePath = text(args.flags, 'cache');
-  return cachePath === undefined ? {} : cacheOptions(cachePath);
+  return {
+    ...(cachePath === undefined ? {} : cacheOptions(cachePath)),
+    ...brandOptions(args.flags),
+  };
 }
 
 function cacheOptions(cachePath: string): FuelPricesOptions {
@@ -199,11 +220,53 @@ function cacheOptions(cachePath: string): FuelPricesOptions {
   };
 }
 
+/**
+ * `--brand` implies `--brands`: filtering on a network you never went and fetched
+ * would just match nothing, which reads as a bug.
+ */
+function wantsBrands(flags: ParsedArgs['flags']): boolean {
+  return flags.get('brands') === true || text(flags, 'brand') !== undefined;
+}
+
+/** `force` is how `ask` says the same thing about an answered enseigne question. */
+function brandOptions(flags: ParsedArgs['flags'], force = false): FuelPricesOptions {
+  if (!force && !wantsBrands(flags)) return {};
+
+  return {
+    brands: {
+      sources: brandSources(flags),
+      onError: (error) => console.error(`brands: ${error.message}`),
+    },
+  };
+}
+
+function brandSources(flags: ParsedArgs['flags']): BrandSource[] {
+  const endpoint = text(flags, 'overpass');
+  const overpass = overpassBrands(endpoint === undefined ? {} : { endpoint });
+
+  switch (text(flags, 'brand-source') ?? 'overpass') {
+    case 'overpass':
+      return [overpass];
+    case '2aaz':
+      return [prixCarburantsBrands()];
+    // Overpass first: it brands everything in one request, and the reuse then
+    // spends its capped request budget on whatever is left.
+    case 'both':
+      return [overpass, prixCarburantsBrands()];
+    default:
+      throw fail(
+        `--brand-source expects overpass, 2aaz or both, got "${String(text(flags, 'brand-source'))}".`,
+      );
+  }
+}
+
 interface PrintContext {
   style: Style;
   asJson: boolean;
   /** Fuel the results are sorted on, if any: its column is highlighted. */
   highlight: FuelType | undefined;
+  /** Brands were asked for, so the column is printed either way. */
+  brands: boolean;
   elapsedMs: () => number;
 }
 
@@ -243,6 +306,7 @@ function printMatches(
     width: terminalWidth(),
     isOpen: (match) => client.isOpenAt(match.station, now),
     ...(context.highlight === undefined ? {} : { highlight: context.highlight }),
+    brands: context.brands,
     now: now.getTime(),
   });
 
@@ -305,6 +369,7 @@ async function runAnswers(
     near,
     radiusMeters: answers.radiusMeters,
     ...(answers.fuels.length === 0 ? {} : { fuel: answers.fuels }),
+    ...(answers.brands.length === 0 ? {} : { brand: answers.brands }),
     ...(answers.openNow ? { openAt: new Date() } : {}),
     ...(answers.maxPriceAge === undefined ? {} : { maxPriceAge: answers.maxPriceAge }),
     sort: answers.sort,
@@ -327,22 +392,21 @@ async function reportLoad(
   client: FuelPricesClient,
   style: Style,
   cachePath: string | undefined,
+  brands = false,
 ): Promise<void> {
   const started = Date.now();
-  console.log(
-    style.dim(
-      cachePath === undefined
-        ? '\nReading the whole dataset (no cache; this can take a minute)…'
-        : `\nReading the dataset (cache: ${cachePath})…`,
-    ),
-  );
+  const cache = cachePath === undefined ? 'no cache' : `cache: ${cachePath}`;
+  // Brands roughly triple a cold start, so saying "a minute" would be a lie.
+  const cost = brands ? '; brands add a few minutes on a cold start' : '';
+  console.log(style.dim(`\nReading the dataset (${cache}${cost})…`));
 
   const result = await client.load();
   const elapsed = formatElapsed(Date.now() - started);
   const source =
     result.mode === 'cache' ? 'from the cache' : 'downloaded, and cached for next time';
+  const branded = brands ? `, ${String(result.branded)} branded` : '';
 
-  console.log(style.dim(`${String(client.size)} stations ${source} in ${elapsed}\n`));
+  console.log(style.dim(`${String(client.size)} stations ${source}${branded} in ${elapsed}\n`));
 }
 
 async function run(argv: string[]): Promise<number> {
@@ -367,6 +431,7 @@ async function run(argv: string[]): Promise<number> {
     style,
     asJson,
     highlight: undefined,
+    brands: wantsBrands(args.flags),
     elapsedMs: () => Date.now() - started,
   };
 
@@ -382,12 +447,20 @@ async function run(argv: string[]): Promise<number> {
           });
     if (answers === null) return 0;
 
-    const interactive = new FuelPricesClient(
-      answers.cachePath === undefined ? {} : cacheOptions(answers.cachePath),
-    );
-    if (!asJson) await reportLoad(interactive, style, answers.cachePath);
+    const interactive = new FuelPricesClient({
+      ...(answers.cachePath === undefined ? {} : cacheOptions(answers.cachePath)),
+      ...(answers.fetchBrands ? brandOptions(args.flags, true) : {}),
+    });
+    if (!asJson) await reportLoad(interactive, style, answers.cachePath, answers.fetchBrands);
 
-    return runAnswers(answers, interactive, printContext);
+    // The clock restarts here: `started` predates the questions, and a footer
+    // reporting how long somebody took to type would be a strange thing to read.
+    const asked = Date.now();
+    return runAnswers(answers, interactive, {
+      ...printContext,
+      brands: answers.fetchBrands,
+      elapsedMs: () => Date.now() - asked,
+    });
   }
 
   const client = new FuelPricesClient(clientOptions(args));
@@ -471,7 +544,10 @@ async function run(argv: string[]): Promise<number> {
 
     case 'sync': {
       const first = await client.load();
-      console.log(`load: ${first.mode}, ${String(first.total)} stations`);
+      console.log(
+        `load: ${first.mode}, ${String(first.total)} stations, ` +
+          `${String(first.branded)} branded`,
+      );
 
       const delta = await client.sync();
       console.log(
@@ -486,6 +562,7 @@ async function run(argv: string[]): Promise<number> {
       const result = await client.load();
       console.log(`mode: ${result.mode}`);
       console.log(`stations: ${String(client.size)}`);
+      console.log(`branded: ${String(result.branded)}`);
       console.log(`last sync: ${client.lastSyncedAt?.toISOString() ?? 'never'}`);
 
       for (const fuel of FUEL_TYPES) {
