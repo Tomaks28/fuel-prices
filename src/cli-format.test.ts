@@ -24,6 +24,11 @@ function match(overrides: Partial<RawStationRecord>, distanceMeters: number | nu
   };
 }
 
+/** The same match, with the brand a source would have put on it. */
+function branded_(base: StationMatch, brand: string): StationMatch {
+  return { ...base, station: { ...base.station, brand } };
+}
+
 function options(overrides: Partial<TableOptions> = {}): TableOptions {
   return { style: PLAIN, width: 120, isOpen: () => null, now: NOW, ...overrides };
 }
@@ -100,6 +105,38 @@ describe('formatMatches', () => {
   it('drops the distance column when no match has one', () => {
     const [header] = formatMatches([match({}, null)], options());
     expect(header).not.toContain('DIST');
+  });
+
+  it('drops the brand column when no station is branded', () => {
+    const [header] = formatMatches([match({}, null)], options());
+
+    // Without a brand source that column would be dashes all the way down.
+    expect(header).not.toContain('BRAND');
+  });
+
+  it('keeps the column when brands were asked for and none came back', () => {
+    const [header, ...printed] = formatMatches([match({}, null)], options({ brands: true }));
+
+    // A source that failed has to read as an empty column, not as a missing one.
+    expect(header).toContain('BRAND');
+    expect(printed[0]).toContain('—');
+  });
+
+  it('prints the brand of the stations that have one', () => {
+    const branded = branded_(match({}, null), 'TotalEnergies');
+    const [header, ...printed] = formatMatches([branded, match({ id: 2 }, null)], options());
+
+    expect(header).toContain('BRAND');
+    expect(printed[0]).toContain('TotalEnergies');
+    expect(printed[1]).toContain('—');
+  });
+
+  it('truncates a brand rather than shifting the columns', () => {
+    const branded = branded_(match({}, null), 'A network with a very long name');
+    const printed = rows([branded]);
+
+    expect(printed[0]).toContain('A network wi…');
+    expect(printed[0]).not.toContain('very long');
   });
 
   it('puts the highlighted fuel in the first price column', () => {
