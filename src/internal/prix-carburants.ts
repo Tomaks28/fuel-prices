@@ -17,6 +17,7 @@
 import { FuelPricesError } from '../errors.js';
 
 import { JsonHttpClient, type HttpOptions } from './http.js';
+import { trimTrailing } from './text.js';
 
 export interface PrixCarburantsClientOptions extends HttpOptions {
   /** API root. Defaults to `https://api.prix-carburants.2aaz.fr`. */
@@ -41,7 +42,7 @@ export class PrixCarburantsClient {
   readonly #apiKey: string | undefined;
 
   constructor(options: PrixCarburantsClientOptions = {}) {
-    this.#baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
+    this.#baseUrl = trimTrailing(options.baseUrl ?? DEFAULT_BASE_URL, '/');
     this.#apiKey = options.apiKey;
     this.#http = new JsonHttpClient({
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,

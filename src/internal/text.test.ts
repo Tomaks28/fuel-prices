@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { toLookupKey } from './text.js';
+import { toLookupKey, trimChars, trimTrailing } from './text.js';
 
 describe('toLookupKey', () => {
   it.each([
@@ -29,5 +29,51 @@ describe('toLookupKey', () => {
 
   it('returns an empty key for input that carries no letters', () => {
     expect(toLookupKey('  --  ')).toBe('');
+  });
+});
+
+describe('trimChars', () => {
+  it.each([
+    ['"Avia"', '"\'', 'Avia'],
+    ['«Total»', '«»', 'Total'],
+    ['((Esso))', '()', 'Esso'],
+    ['Avia', '"\'', 'Avia'],
+    ['', '"', ''],
+  ])('trims %j of %j', (value, cut, expected) => {
+    expect(trimChars(value, cut)).toBe(expected);
+  });
+
+  it('leaves the middle alone', () => {
+    expect(trimChars('a"b"c', '"')).toBe('a"b"c');
+  });
+
+  it('empties a value made only of what it cuts', () => {
+    expect(trimChars('""""', '"')).toBe('');
+  });
+});
+
+describe('trimTrailing', () => {
+  it.each([
+    ['Dyneff.', ' .', 'Dyneff'],
+    ['Total —', ' —', 'Total'],
+    ['https://example.test///', '/', 'https://example.test'],
+    ['https://example.test', '/', 'https://example.test'],
+  ])('trims the end of %j', (value, cut, expected) => {
+    expect(trimTrailing(value, cut)).toBe(expected);
+  });
+
+  it('leaves the start alone, unlike trimChars', () => {
+    expect(trimTrailing('...Total...', '.')).toBe('...Total');
+    expect(trimChars('...Total...', '.')).toBe('Total');
+  });
+
+  it('stays linear where the regex form does not', () => {
+    // `/[.]+$/` on this input takes ~28 ms and quadruples with the length; the
+    // loop is what keeps a public sanitizer safe to hand any string to.
+    const pathological = `${'.'.repeat(200_000)}x`;
+
+    const started = performance.now();
+    expect(trimTrailing(pathological, '.')).toBe(pathological);
+    expect(performance.now() - started).toBeLessThan(100);
   });
 });

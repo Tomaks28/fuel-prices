@@ -10,6 +10,8 @@
 import { FuelPricesError } from '../errors.js';
 import { VERSION } from '../version.js';
 
+import { trimTrailing } from './text.js';
+
 import type { RawStationRecord } from './dataset.js';
 
 /** Minimal `fetch` contract, so a stub can be injected in tests. */
@@ -220,7 +222,7 @@ export class DatasetClient {
   readonly #dataset: string;
 
   constructor(options: DatasetClientOptions = {}) {
-    this.#baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
+    this.#baseUrl = trimTrailing(options.baseUrl ?? DEFAULT_BASE_URL, '/');
     this.#dataset = options.dataset ?? DEFAULT_DATASET;
     this.#http = new JsonHttpClient({ ...options, service: 'the fuel-price API' });
   }
