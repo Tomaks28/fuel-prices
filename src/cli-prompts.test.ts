@@ -4,6 +4,7 @@ import {
   centreOf,
   defaultAnswers,
   parseAge,
+  parseBrands,
   parseFuels,
   parsePlace,
   promptForAnswers,
@@ -46,7 +47,7 @@ describe('promptForAnswers', () => {
     expect(questions.join('\n')).toContain('[.cache/fuel-prices.json]');
   });
 
-  it('asks the eight questions in a fixed order', async () => {
+  it('asks the nine questions in a fixed order', async () => {
     const { ask, questions } = ENTER_THROUGHOUT();
     await promptForAnswers(ask);
 
@@ -54,6 +55,7 @@ describe('promptForAnswers', () => {
       'Where?',
       'Radius in metres',
       'Fuel(s)',
+      'Show the enseignes?',
       'open right now?',
       'Ignore quotes older than',
       'Sort by',
@@ -67,11 +69,34 @@ describe('promptForAnswers', () => {
     });
   });
 
+  it('only asks which enseigne once it is going to fetch them', async () => {
+    const enter = ENTER_THROUGHOUT();
+    await promptForAnswers(enter.ask);
+    expect(enter.questions.join('\n')).not.toContain('which enseigne');
+
+    // `y` inserts the filter question, so the flow is nine questions or ten.
+    const { ask, questions } = scripted(['', '', '', 'y']);
+    const answers = await promptForAnswers(ask);
+
+    expect(questions).toHaveLength(10);
+    expect(questions[4]).toContain('which enseigne');
+    expect(answers).toMatchObject({ fetchBrands: true, brands: [] });
+  });
+
+  it('shows the enseignes without filtering on any', async () => {
+    // The whole point of splitting the question: seeing them is not narrowing.
+    const { ask } = scripted(['', '', '', 'yes', 'any']);
+
+    expect(await promptForAnswers(ask)).toMatchObject({ fetchBrands: true, brands: [] });
+  });
+
   it('takes the answers it is given', async () => {
     const { ask } = scripted([
       '48.11,-1.67',
       '5000',
       'gazole, e85',
+      'y',
+      'total, super u',
       'yes',
       '12h',
       'price',
@@ -83,6 +108,8 @@ describe('promptForAnswers', () => {
       place: '48.11,-1.67',
       radiusMeters: 5_000,
       fuels: ['gazole', 'e85'],
+      fetchBrands: true,
+      brands: ['total', 'super u'],
       openNow: true,
       maxPriceAge: 12 * 60 * 60 * 1000,
       sort: 'price',
@@ -92,13 +119,14 @@ describe('promptForAnswers', () => {
   });
 
   it('mixes answers and defaults freely', async () => {
-    const { ask } = scripted(['Lyon', '', '', '', 'none', '', '5']);
+    const { ask } = scripted(['Lyon', '', '', '', '', 'none', '', '5']);
     const answers = await promptForAnswers(ask);
 
     expect(answers).toMatchObject({
       place: 'Lyon',
       radiusMeters: PROMPT_DEFAULTS.radiusMeters,
       fuels: [],
+      brands: [],
       maxPriceAge: undefined,
       sort: 'distance',
       limit: 5,
@@ -106,8 +134,16 @@ describe('promptForAnswers', () => {
     });
   });
 
+  it('leaves the enseignes alone by default, and says what they would cost', async () => {
+    const { ask, questions } = ENTER_THROUGHOUT();
+
+    expect(await promptForAnswers(ask)).toMatchObject({ fetchBrands: false, brands: [] });
+    expect(questions[3]).toContain('[n]');
+    expect(questions[3]).toContain('a lookup');
+  });
+
   it('turns the cache off on request', async () => {
-    const { ask } = scripted(['', '', '', '', '', '', '', 'none']);
+    const { ask } = scripted(['', '', '', '', '', '', '', '', 'none']);
 
     expect((await promptForAnswers(ask)).cachePath).toBeUndefined();
   });
@@ -116,9 +152,9 @@ describe('promptForAnswers', () => {
     ['a radius that is not a number', ['', 'far']],
     ['a negative radius', ['', '-1']],
     ['an unknown fuel', ['', '', 'diesel']],
-    ['an answer that is neither yes nor no', ['', '', '', 'maybe']],
-    ['an unreadable age', ['', '', '', '', 'a fortnight']],
-    ['an unknown sort', ['', '', '', '', '', 'cheapest']],
+    ['an answer that is neither yes nor no', ['', '', '', '', 'maybe']],
+    ['an unreadable age', ['', '', '', '', '', 'a fortnight']],
+    ['an unknown sort', ['', '', '', '', '', '', 'cheapest']],
   ])('rejects %s', async (_label, answers) => {
     await expect(promptForAnswers(scripted(answers).ask)).rejects.toMatchObject({
       name: 'FuelPricesError',
@@ -127,8 +163,23 @@ describe('promptForAnswers', () => {
   });
 
   it('accepts yes and no in French too', async () => {
-    expect((await promptForAnswers(scripted(['', '', '', 'oui']).ask)).openNow).toBe(true);
-    expect((await promptForAnswers(scripted(['', '', '', 'non']).ask)).openNow).toBe(false);
+    expect((await promptForAnswers(scripted(['', '', '', '', 'oui']).ask)).openNow).toBe(true);
+    expect((await promptForAnswers(scripted(['', '', '', '', 'non']).ask)).openNow).toBe(false);
+  });
+});
+
+describe('parseBrands', () => {
+  it('reads a list, trimming but leaving the spelling to the SDK', () => {
+    expect(parseBrands(' Total , super u ')).toEqual(['Total', 'super u']);
+    expect(parseBrands('TOTAL')).toEqual(['TOTAL']);
+  });
+
+  it.each(['any', '', '   ', 'none', 'off'])('reads %j as no lookup at all', (raw) => {
+    expect(parseBrands(raw)).toEqual([]);
+  });
+
+  it('drops the empty slots of a trailing comma', () => {
+    expect(parseBrands('total,,')).toEqual(['total']);
   });
 });
 
