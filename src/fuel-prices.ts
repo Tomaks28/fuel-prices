@@ -8,8 +8,10 @@
  * previous sync.
  */
 
+import { overpassBrands, resolveBrands, type BrandSource } from './brands.js';
 import { CACHE_VERSION, type CacheEntry, type CacheStore } from './cache.js';
 import { FuelPricesError } from './errors.js';
+import { toBrandKey } from './internal/brand.js';
 import { STATION_SELECT, updatedSinceWhere } from './internal/dataset.js';
 import { assertGeoPoint, assertRadius, distanceMeters } from './internal/geo.js';
 import { DatasetClient, type DatasetClientOptions } from './internal/http.js';
@@ -28,6 +30,20 @@ import type {
   StationQuery,
   SyncResult,
 } from './types.js';
+
+/** How to put a brand on stations the feed publishes without one. */
+export interface BrandsOptions {
+  /**
+   * Sources to try, in order; each one only sees the stations the previous ones
+   * could not name. Defaults to `[overpassBrands()]`.
+   */
+  sources?: readonly BrandSource[];
+  /**
+   * Called when a source failed. Brands never fail a sync — the prices are
+   * already in hand — so this is the only way to hear about it.
+   */
+  onError?: (error: FuelPricesError) => void;
+}
 
 export interface FuelPricesOptions extends DatasetClientOptions {
   /**
@@ -54,6 +70,15 @@ export interface FuelPricesOptions extends DatasetClientOptions {
    * fail a sync, so this is the only way to hear about them.
    */
   onCacheError?: (error: FuelPricesError) => void;
+  /**
+   * Name the network of each station, which the official feed does not publish.
+   *
+   * `true` reads OpenStreetMap through Overpass — one request for the whole
+   * country. Pass an object to choose the sources, and see {@link BrandsOptions}
+   * and the `brands` module for what each one costs. Resolved brands are
+   * persisted with the snapshot, so the next run starts already branded.
+   */
+  brands?: boolean | BrandsOptions;
 }
 
 /** Options of a single {@link FuelPricesClient.sync} call. */
@@ -92,6 +117,8 @@ export class FuelPricesClient {
   readonly #cacheMaxAgeMs: number;
   readonly #datasetKey: string;
   readonly #onCacheError: ((error: FuelPricesError) => void) | undefined;
+  readonly #brandSources: readonly BrandSource[];
+  readonly #onBrandError: ((error: FuelPricesError) => void) | undefined;
 
   #lastResult: SyncResult | null = null;
   #lastSyncedAt: Date | null = null;
@@ -106,6 +133,8 @@ export class FuelPricesClient {
     this.#cacheMaxAgeMs = Math.max(0, options.cacheMaxAgeMs ?? DEFAULT_CACHE_MAX_AGE_MS);
     this.#datasetKey = options.dataset ?? DEFAULT_DATASET_KEY;
     this.#onCacheError = options.onCacheError;
+    this.#brandSources = toBrandSources(options.brands);
+    this.#onBrandError = typeof options.brands === 'object' ? options.brands.onError : undefined;
   }
 
   /** The cache holds a snapshot. */
@@ -140,7 +169,7 @@ export class FuelPricesClient {
       // Re-checked inside the queue: a load may have completed while we waited.
       if (this.#lastResult !== null) return this.#lastResult;
 
-      const hydrated = await this.#hydrateFromCache();
+      const hydrated = await this.#hydrateFromCache(signal);
       return hydrated ?? this.#fullSync(signal);
     });
   }
@@ -231,6 +260,18 @@ export class FuelPricesClient {
     return found.sort((a, b) => a.distanceMeters - b.distanceMeters);
   }
 
+  /**
+   * Stations of one network, however it is spelled: `"total"`, `"TOTAL"` and
+   * `"Total Access"` all return the TotalEnergies stations.
+   *
+   * Empty unless a brand source is configured — see
+   * {@link FuelPricesOptions.brands}.
+   */
+  async getStationsByBrand(brand: string, signal?: AbortSignal): Promise<Station[]> {
+    await this.load(signal);
+    return [...(this.#indexes().byBrand.get(toBrandKey(brand)) ?? [])];
+  }
+
   /** Stations selling `fuel`, cheapest first. */
   async getStationsByFuel(fuel: FuelType, signal?: AbortSignal): Promise<Station[]> {
     await this.load(signal);
@@ -250,14 +291,7 @@ export class FuelPricesClient {
     const criteria = compileQuery(query);
     await this.load(signal);
 
-    const candidates =
-      criteria.city !== undefined
-        ? (this.#indexes().byCity.get(criteria.city) ?? [])
-        : criteria.postalCode !== undefined
-          ? (this.#indexes().byPostalCode.get(criteria.postalCode) ?? [])
-          : criteria.department !== undefined
-            ? (this.#indexes().byDepartment.get(criteria.department) ?? [])
-            : this.#stations.values();
+    const candidates = this.#candidates(criteria);
 
     const matches: StationMatch[] = [];
     for (const station of candidates) {
@@ -317,7 +351,7 @@ export class FuelPricesClient {
    * Fills the cache from the store, if it holds a fresh enough snapshot of this
    * dataset. Returns `null` on a miss, so the caller falls back to the network.
    */
-  async #hydrateFromCache(): Promise<SyncResult | null> {
+  async #hydrateFromCache(signal: AbortSignal | undefined): Promise<SyncResult | null> {
     if (this.#cache === undefined) return null;
 
     let entry: CacheEntry | null;
@@ -333,9 +367,20 @@ export class FuelPricesClient {
     const syncedAt = new Date(entry.syncedAt);
     if (Date.now() - syncedAt.getTime() > this.#cacheMaxAgeMs) return null;
 
+    // A snapshot written before brands were switched on carries none at all, and
+    // that is the one case worth a lookup here: hydrating is meant to cost no
+    // request, and the stations a source could not name last time it will not
+    // name now either. `refresh()` is what goes back for those.
+    const cached = countBranded(entry.stations);
+    const stations = cached === 0 ? await this.#withBrands(entry.stations, signal) : entry.stations;
+
     this.#stations.clear();
-    for (const station of entry.stations) this.#stations.set(station.id, station);
+    for (const station of stations) this.#stations.set(station.id, station);
     this.#index = null;
+
+    const branded = this.#brandedCount();
+    // Written back, so switching brands on costs one lookup rather than one a run.
+    if (branded > cached) await this.#persistToCache(syncedAt.toISOString());
 
     return this.#commit({
       mode: 'cache',
@@ -347,6 +392,7 @@ export class FuelPricesClient {
       unchanged: 0,
       removed: 0,
       total: this.#stations.size,
+      branded,
       stations: [...this.#stations.values()],
     });
   }
@@ -387,7 +433,7 @@ export class FuelPricesClient {
 
   async #fullSync(signal: AbortSignal | undefined): Promise<SyncResult> {
     const syncedAt = new Date();
-    const stations = await this.#fetchStations(undefined, signal);
+    const stations = await this.#withBrands(await this.#fetchStations(undefined, signal), signal);
 
     let added = 0;
     let updated = 0;
@@ -419,13 +465,17 @@ export class FuelPricesClient {
       unchanged,
       removed,
       total: this.#stations.size,
+      branded: this.#brandedCount(),
       stations,
     });
   }
 
   async #incrementalSync(since: Date, signal: AbortSignal | undefined): Promise<SyncResult> {
     const syncedAt = new Date();
-    const stations = await this.#fetchStations(updatedSinceWhere(since), signal);
+    const stations = await this.#withBrands(
+      await this.#fetchStations(updatedSinceWhere(since), signal),
+      signal,
+    );
 
     let added = 0;
     let updated = 0;
@@ -452,6 +502,7 @@ export class FuelPricesClient {
       unchanged,
       removed: 0,
       total: this.#stations.size,
+      branded: this.#brandedCount(),
       stations,
     });
   }
@@ -469,9 +520,47 @@ export class FuelPricesClient {
     const stations: Station[] = [];
     for (const record of records) {
       const station = toStation(record);
-      if (station !== null) stations.push(station);
+      if (station === null) continue;
+      // The feed carries no brand, so a station that already has one keeps it
+      // rather than losing it on every sync — brands do not move hourly.
+      stations.push(withKnownBrand(station, this.#stations.get(station.id)));
     }
     return stations;
+  }
+
+  /**
+   * Puts a brand on the stations still without one.
+   *
+   * Returns `stations` untouched when there is nothing to do, which is also how
+   * the caller tells whether the snapshot is worth persisting again.
+   */
+  async #withBrands(
+    stations: readonly Station[],
+    signal: AbortSignal | undefined,
+  ): Promise<Station[]> {
+    if (this.#brandSources.length === 0) return [...stations];
+
+    const pending = stations.filter((station) => station.brand === null);
+    if (pending.length === 0) return [...stations];
+
+    const brands = await resolveBrands(this.#brandSources, pending, {
+      signal,
+      onError: this.#onBrandError,
+    });
+    if (brands.size === 0) return [...stations];
+
+    return stations.map((station) => {
+      const brand = brands.get(station.id);
+      return brand === undefined ? station : { ...station, brand };
+    });
+  }
+
+  #brandedCount(): number {
+    let branded = 0;
+    for (const station of this.#stations.values()) {
+      if (station.brand !== null) branded += 1;
+    }
+    return branded;
   }
 
   #commit(result: SyncResult): SyncResult {
@@ -483,6 +572,31 @@ export class FuelPricesClient {
   #indexes(): StationIndex {
     this.#index ??= buildIndex(this.#stations.values());
     return this.#index;
+  }
+
+  /**
+   * The stations worth testing: the narrowest index the query can use, or the
+   * whole cache. Every criterion is re-checked afterwards, so picking the wrong
+   * one here only costs time.
+   */
+  #candidates(criteria: Criteria): Iterable<Station> {
+    const indexes = this.#indexes();
+
+    if (criteria.city !== undefined) return indexes.byCity.get(criteria.city) ?? [];
+    if (criteria.postalCode !== undefined) {
+      return indexes.byPostalCode.get(criteria.postalCode) ?? [];
+    }
+    if (criteria.department !== undefined) {
+      return indexes.byDepartment.get(criteria.department) ?? [];
+    }
+    // Only for a single brand: the union of several would need deduplicating,
+    // and scanning the cache is cheaper than that.
+    const [brand] = criteria.brands;
+    if (criteria.brands.length === 1 && brand !== undefined) {
+      return indexes.byBrand.get(brand) ?? [];
+    }
+
+    return this.#stations.values();
   }
 
   /**
@@ -513,6 +627,8 @@ interface Criteria {
   city: string | undefined;
   postalCode: string | undefined;
   department: string | undefined;
+  /** Brand keys, ORed; empty when the query names none. */
+  brands: readonly string[];
   fuels: readonly FuelType[];
   maxPrice: number | undefined;
   kind: 'road' | 'highway' | undefined;
@@ -570,6 +686,7 @@ function compileQuery(query: StationQuery): Criteria {
     city: query.city === undefined ? undefined : toLookupKey(query.city),
     postalCode: query.postalCode?.trim(),
     department: query.department?.trim().toUpperCase(),
+    brands: query.brand === undefined ? [] : [query.brand].flat().map(toBrandKey),
     fuels,
     maxPrice: query.maxPrice,
     kind: query.kind,
@@ -600,6 +717,10 @@ function matchesRest(station: Station, criteria: Criteria): boolean {
     if (station.department?.code.toUpperCase() !== criteria.department) return false;
   }
   if (criteria.kind !== undefined && station.kind !== criteria.kind) return false;
+  if (criteria.brands.length > 0) {
+    if (station.brand === null || !criteria.brands.includes(toBrandKey(station.brand)))
+      return false;
+  }
 
   for (const fuel of criteria.fuels) {
     const price = station.prices[fuel];
@@ -656,6 +777,7 @@ interface StationIndex {
   byCity: Map<string, Station[]>;
   byPostalCode: Map<string, Station[]>;
   byDepartment: Map<string, Station[]>;
+  byBrand: Map<string, Station[]>;
 }
 
 function buildIndex(stations: Iterable<Station>): StationIndex {
@@ -663,6 +785,7 @@ function buildIndex(stations: Iterable<Station>): StationIndex {
     byCity: new Map(),
     byPostalCode: new Map(),
     byDepartment: new Map(),
+    byBrand: new Map(),
   };
 
   for (const station of stations) {
@@ -671,6 +794,7 @@ function buildIndex(stations: Iterable<Station>): StationIndex {
     if (station.department?.code) {
       push(index.byDepartment, station.department.code.toUpperCase(), station);
     }
+    if (station.brand !== null) push(index.byBrand, toBrandKey(station.brand), station);
   }
   return index;
 }
@@ -679,6 +803,24 @@ function push(bucket: Map<string, Station[]>, key: string, station: Station): vo
   const existing = bucket.get(key);
   if (existing === undefined) bucket.set(key, [station]);
   else existing.push(station);
+}
+
+/** `true` means the default source; an object may name its own. */
+function toBrandSources(brands: FuelPricesOptions['brands']): readonly BrandSource[] {
+  if (brands === undefined || brands === false) return [];
+  if (brands === true) return [overpassBrands()];
+  return brands.sources ?? [overpassBrands()];
+}
+
+/** Carries a resolved brand across syncs: the feed itself publishes none. */
+function withKnownBrand(station: Station, previous: Station | undefined): Station {
+  const known = previous?.brand;
+  if (station.brand !== null || known === undefined || known === null) return station;
+  return { ...station, brand: known };
+}
+
+function countBranded(stations: readonly Station[]): number {
+  return stations.filter((station) => station.brand !== null).length;
 }
 
 function toDate(value: Date | string, label: string): Date {

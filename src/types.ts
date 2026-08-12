@@ -80,6 +80,15 @@ export interface Station {
   readonly location: GeoPoint | null;
   /** `highway` for a motorway service station, `road` for any other. */
   readonly kind: 'road' | 'highway';
+  /**
+   * Network selling the fuel, canonical (`"TotalEnergies"`, `"Système U"`).
+   *
+   * `null` unless a brand source is configured — the official feed publishes no
+   * brand at all — and `null` too for the stations the source could not name.
+   * Sub-banners are folded into their network, so a Total Access reads
+   * `"TotalEnergies"`.
+   */
+  readonly brand: string | null;
   /** The station has an unattended pump available 24/7. */
   readonly open24h: boolean;
   /** Free-form service labels, as worded by the feed ("Station de lavage", …). */
@@ -129,6 +138,15 @@ export interface StationQuery {
   readonly postalCode?: string;
   /** Département INSEE code, e.g. `"35"` or `"2A"`. */
   readonly department?: string;
+  /**
+   * Keeps stations of any of these networks — the one criterion that ORs rather
+   * than ANDs, since a station has a single brand. Spelling is free: `"total"`,
+   * `"TOTAL"` and `"Total Access"` all select TotalEnergies.
+   *
+   * Needs a brand source; without one no station has a brand and this matches
+   * nothing.
+   */
+  readonly brand?: string | readonly string[];
   /** Keeps stations selling every listed fuel. */
   readonly fuel?: FuelType | readonly FuelType[];
   /** Upper bound on the price of `fuel`. Requires a single `fuel`. */
@@ -177,6 +195,14 @@ export interface SyncResult {
   readonly removed: number;
   /** Cache size once the result was applied. */
   readonly total: number;
+  /**
+   * Cached stations carrying a brand once the result was applied — `0` unless a
+   * brand source is configured, since the feed publishes none.
+   *
+   * Worth watching: a source that failed, or one that hit its own request
+   * ceiling, shows up here as a count well below `total` rather than as an error.
+   */
+  readonly branded: number;
   /** The stations the API returned — i.e. the delta, for an incremental sync. */
   readonly stations: readonly Station[];
 }

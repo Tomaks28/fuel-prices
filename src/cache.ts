@@ -34,8 +34,8 @@ export interface CacheStore {
   clear?(): Promise<void>;
 }
 
-/** Current {@link CacheEntry.version}. */
-export const CACHE_VERSION = 1;
+/** Current {@link CacheEntry.version}. Bumped when `Station` gained `brand`. */
+export const CACHE_VERSION = 2;
 
 export interface FileCacheOptions {
   /**
