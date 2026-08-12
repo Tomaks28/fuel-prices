@@ -49,6 +49,7 @@ Every getter awaits the initial load, so calling `load()` yourself is optional.
 | `getStationsByPostalCode(code)` | Stations of a postal code                           |
 | `getStationsByDepartment(code)` | Stations of a département (INSEE code)              |
 | `getStationsByFuel(fuel)`       | Stations selling that fuel, cheapest first          |
+| `getStationsByBrand(brand)`     | Stations of a network — needs a [brand source]      |
 | `getStationsNearby(point, m)`   | Stations within a radius in metres, nearest first   |
 | `getStationsUpdatedSince(date)` | Cached stations whose price moved after `date`      |
 | `findStations(query)`           | Every criterion below at once                       |
@@ -80,6 +81,7 @@ console.log(cheapest?.station.city, cheapest?.station.prices.e85?.price, cheapes
 | ------------------------------------ | ---------------------------------------------------- |
 | `near` + `radiusMeters`              | Radius search, inclusive; both are required together |
 | `city` / `postalCode` / `department` | Place filters, city matching as above                |
+| `brand`                              | One network or a list, ORed; needs a [brand source]  |
 | `fuel`                               | One fuel, or a list the station must sell all of     |
 | `maxPrice`                           | Price ceiling; needs exactly one `fuel`              |
 | `kind`                               | `road` or `highway`                                  |
@@ -87,10 +89,133 @@ console.log(cheapest?.station.city, cheapest?.station.prices.e85?.price, cheapes
 | `sort`                               | `distance`, `price` or `updatedAt`                   |
 | `limit`                              | Caps the result set                                  |
 
-Criteria are ANDed, an empty query returns everything, and each match carries
-`distanceMeters` when the query had a centre. The whole thing runs against the
-in-memory snapshot — no request once it is warm. Contradictory queries throw
-`invalid_argument` **before** the dataset is loaded, so a typo costs nothing.
+Criteria are ANDed — `brand` excepted, since a station has only one — an empty
+query returns everything, and each match carries `distanceMeters` when the query
+had a centre. The whole thing runs against the in-memory snapshot — no request
+once it is warm. Contradictory queries throw `invalid_argument` **before** the
+dataset is loaded, so a typo costs nothing.
+
+### Brands
+
+The official feed publishes prices per station and says nothing about the network
+selling them: there is no brand, enseigne or marque column in the dataset. So the
+brand is grafted on from elsewhere, and `Station.brand` is `null` until you say
+where from.
+
+```ts
+const fuelPrices = new FuelPricesClient({
+  brands: true, // OpenStreetMap, through Overpass
+  cache: createFileCache('.cache/fuel-prices.json'),
+});
+
+const totals = await fuelPrices.findStations({ brand: 'total', city: 'rennes' });
+console.log(totals[0]?.station.brand); // 'TotalEnergies'
+```
+
+[brand source]: #brands
+
+Two sources ship, and they are not interchangeable:
+
+| Source                   | Matches on | Cost of the whole dataset | Caveat                                      |
+| ------------------------ | ---------- | ------------------------- | ------------------------------------------- |
+| `overpassBrands()`       | Proximity  | ~15 queries, seconds each | Can capture a garage pump next door         |
+| `prixCarburantsBrands()` | Station id | One request per station   | Third-party reuse, capped at 500 by default |
+
+`overpassBrands()` reads `amenity=fuel` out of OpenStreetMap, which carries a
+`brand` tag on ~87 % of French fuel POIs, and keeps what it downloaded for the
+process. It knows coordinates rather than station ids, so it takes the nearest
+node within `maxDistanceMeters` (150 by default) — the feed and OSM place the same
+station a few tens of metres apart, and raising the tolerance buys coverage at the
+price of false positives.
+
+Measured on the live services: **7 416 of 9 807 stations branded (76 %) in ~193 s**,
+dataset download included, 152 distinct brands. The gap is stations OSM has not
+tagged, not mismatches — the counts per network come out just under the official
+ones, never above.
+
+The query is tiled at 2° and issued two tiles at a time, because all of France in
+one go gets a 504: the interpreter abandons the query on its own 180 s budget
+first. The main instance is the default and, in measurements, the fastest; if it
+keeps timing out, a mirror is one option away:
+
+```ts
+const fuelPrices = new FuelPricesClient({
+  brands: {
+    sources: [overpassBrands({ endpoint: 'https://overpass.kumi.systems/api/interpreter' })],
+    onError: (error) => logger.warn(error),
+  },
+});
+```
+
+`prixCarburantsBrands()` reads the [2àZ reuse][2aaz] of this same official data,
+completed with the enseignes shown on prix-carburants.gouv.fr. It is keyed on the
+dataset's own station id, so it needs no tolerance and cannot mismatch — a sample
+of 12 stations came back branded 12 times, already canonical. But `/station/{id}`
+answers one station per request and the list endpoints are capped at 20 records a
+page, so `maxRequests` (500) is what stops a `load()` from turning into ~9 800
+calls. Which is why it reads best behind the bulk one:
+
+```ts
+const fuelPrices = new FuelPricesClient({
+  // Overpass brands everything in a handful of queries; the reuse then spends
+  // its request budget on what is left.
+  brands: { sources: [overpassBrands(), prixCarburantsBrands({ maxRequests: 1_000 })] },
+});
+```
+
+Sources are tried in order and each one only sees the stations the previous ones
+could not name. `SyncResult.branded` reports how far they got — a source that
+failed, or one that hit its ceiling, shows up as a count below `total` rather than
+as an error, since brands never fail a sync. Pass `onError` to hear about it.
+
+**Sanitizing.** Neither source is a reference table: OSM holds whatever a
+contributor typed and the reuse mixes networks with placeholders. So every value
+goes through `sanitizeBrand`, which drops what is not a brand (`yes`, `communale`,
+`Station service`, `24/24`), trims the decoration (`Station AVIA XPRESS`,
+`B2M SARL`, `"Avia"`), and folds the known French networks onto one spelling each:
+
+| Reaching the SDK                                                                     | Stored as       |
+| ------------------------------------------------------------------------------------ | --------------- |
+| `Total`, `TOTAL`, `Total Access`, `Total Acces`, `Total Excellium`, `Elf`, `Argedis` | `TotalEnergies` |
+| `Super U`, `Station U`, `Hyper U`, `U Express`, `U`, `Super U;Station U`             | `Système U`     |
+| `Carrefour Market`, `Carrefour Contact`, `Carrefour Express`                         | `Carrefour`     |
+| `E. Leclerc`, `Leclerc`                                                              | `E.Leclerc`     |
+| `Esso Express`                                                                       | `Esso`          |
+| `Groupement des Mousquetaires`, `Ecomarché`                                          | `Intermarché`   |
+| `Agip`                                                                               | `Eni`           |
+
+The table only holds the roots: a value is matched whole, then on its leading
+words, which is how `Total Excellium` and a typo like `Total Acces` land on
+TotalEnergies without an entry each. On the sample of 2 583 raw OSM values, that
+came to 99 brands with 6 dropped as non-brands.
+
+`KNOWN_BRANDS` lists what the table can produce; a network it has never heard of
+is kept as it came, cleaned. Note that this folds the discount banners into their
+network: once sanitized, a Total Access is not distinguishable from a flagship
+TotalEnergies. Filtering is spelling-insensitive either way — `brand: 'total'`,
+`'TOTAL'` and `'Total Access'` all select the same stations.
+
+**When lookups happen.** On a full `load()` or `refresh()`, for the stations that
+have no brand yet; a resolved brand is then carried across syncs and persisted
+with the snapshot, so a cache hit starts already branded and costs no request.
+That also means hydrating from cache does _not_ retry the stations a source could
+not name — `refresh()` is what goes back for those.
+
+**Your own source.** `BrandSource` is one method, and whatever it returns is
+sanitized like the rest:
+
+```ts
+const fromOurCrm: BrandSource = {
+  name: 'CRM',
+  resolve: async (stations) => new Map(stations.map((s) => [s.id, lookUp(s.id)])),
+};
+```
+
+One thing brands cannot give you: the premium grades. `Excellium`, `Ultimate` and
+`V-Power` are not fuels in the dataset — the six legal categories are all that is
+declared, so a premium diesel is reported under `gazole` whatever the sign says.
+
+[2aaz]: https://www.data.gouv.fr/reuses/api-prix-carburants
 
 ### Stale prices
 
@@ -222,6 +347,10 @@ truncated, foreign or out-of-date file is a cache miss, not an error. Writes tha
 fail never fail a sync — they surface through `onCacheError` and nowhere else, so
 pass one if you care.
 
+Entries carry a `CACHE_VERSION`, bumped whenever `Station` changes shape — it went
+to 2 when stations gained `brand`. A snapshot from an older version is simply a
+miss: the next `load()` re-reads the dataset and writes it back in the new shape.
+
 `CacheStore` is a two-method interface (`read`, `write`, plus an optional
 `clear`), so Redis or a shared volume plugs in the same way; `createFileCache`
 is just the implementation that ships. `node:fs` is imported dynamically, so the
@@ -237,6 +366,7 @@ const client = new FuelPricesClient({
   cache: createFileCache('.cache/fuel-prices.json'),
   cacheMaxAgeMs: 24 * 60 * 60 * 1000,
   onCacheError: (error) => logger.warn(error),
+  brands: { sources: [overpassBrands()], onError: (error) => logger.warn(error) },
   fetch: myFetch, // stub or instrument the transport
   baseUrl,
   dataset, // point at another Opendatasoft portal
@@ -292,6 +422,7 @@ npm run cli -- ask --defaults # skip the prompts entirely
 Where? "lat,lon" or a city name [Paris]:
 Radius in metres [20000]:
 Fuel(s), comma separated (gazole, sp95, sp98, e10, e85, gplc) [any]:
+Show the enseignes? (the feed has none — a lookup, minutes on a cold cache) [n]:
 Only stations open right now? [n]:
 Ignore quotes older than [7d]:
 Sort by (distance, price, updatedAt) [distance]:
@@ -314,6 +445,11 @@ column bold, open green and closed red, and a quote older than a week yellow —
 red past a month. Colour is off when the output is piped, `NO_COLOR` is honoured,
 and `--no-color` overrides everything.
 
+Saying yes to the enseignes adds one question — which ones to keep, `any` to keep
+them all — and switches the lookup on for that run. It is the only question that
+costs requests the prices have not already paid for, hence the default and the
+warning.
+
 Answer the first question with a city name and it is resolved against the dataset
 itself — the centre of that city's stations — rather than a built-in gazetteer.
 `ask` refuses to run without a terminal, so piping into it fails fast instead of
@@ -334,6 +470,28 @@ npm run cli -- info
 Every command takes the `findStations` filters, plus `--cache <file>` to exercise
 persistence and `--json` for raw output. Pass `--cache` twice in a row to feel the
 difference the snapshot makes.
+
+Brands are behind `--brands`, and `--brand` implies it — filtering on a network you
+never went and fetched would just match nothing. Answering the `Enseigne(s)`
+question of `ask` does the same. A `BRAND` column then appears:
+
+```sh
+npm run cli -- find --city rennes --brand total --cache .cache/stations.json
+npm run cli -- find --brands --brand-source both --near 48.11,-1.67 --radius 5000
+npm run cli -- find --brands --overpass https://overpass.kumi.systems/api/interpreter --city brest
+```
+
+```
+#       DIST BRAND         PLACE            GAZOLE   SP95   SP98    E10    E85   AGE STATUS   ID
+1.    1.7 km Système U     Rennes 35200 · …  2.059      —  1.990  1.885      —    5d unknown  35200008
+2.    2.0 km TotalEnergies Rennes 35000 · …  2.196      —      —      —      —   15h open     35000025
+3.    2.5 km TotalEnergies Rennes 35000 · …  2.137      —  1.990  1.939  0.840    0h open     35000023
+```
+
+The column stays once brands are asked for, even if the lookup came back empty: a
+source that failed reads as a column of dashes rather than as a column that
+silently never appeared. The first run pays for the lookups and writes them to
+`--cache`; the next ones read them off the snapshot in milliseconds.
 
 ### Tests
 
@@ -388,6 +546,16 @@ Opendatasoft Explore API v2.1. It is public open data: no credentials, best-effo
 an anonymous budget the portal reports as 50 000 requests/day (`X-RateLimit-*` headers) with a
 5-minute response cache — which the sync strategy above stays well within. Prices and timestamps
 are self-reported by the stations. This package is not affiliated with the French administration.
+
+Brands do not come from there, because the dataset has no brand column: they are optional, off by
+default, and read from [OpenStreetMap][osm] through a public Overpass instance (ODbL — attribution
+and share-alike apply to what you redistribute) or from the [2àZ reuse][2aaz-src] of the official
+data. Both are free services run by other people; the tiling, the request ceiling and the
+`user-agent` this SDK sends are there to keep it a well-behaved caller, and the snapshot cache is
+what stops it asking twice.
+
+[osm]: https://www.openstreetmap.org/copyright
+[2aaz-src]: https://api.prix-carburants.2aaz.fr
 
 ## License
 
