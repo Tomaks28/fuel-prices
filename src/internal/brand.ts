@@ -12,7 +12,7 @@
  * French networks — sub-banners included — onto one spelling each.
  */
 
-import { toLookupKey } from './text.js';
+import { toLookupKey, trimChars, trimTrailing } from './text.js';
 
 /**
  * Networks the SDK knows, and the spellings that reach it.
@@ -155,11 +155,31 @@ const NOISE_PREFIX = /^(?:station(?:[ -]service)?|garage)\s+(?=\S)/iu;
 
 /** French company forms, which wrap operator names far more often than brands. */
 const COMPANY_FORMS = 'sarl|sas|sasu|sa|snc|eurl|sci|sca|gie|scop|cuma';
-const COMPANY_SUFFIX = new RegExp(`[\\s,]+(?:${COMPANY_FORMS})\\.?$`, 'iu');
-const COMPANY_PREFIX = new RegExp(`^(?:${COMPANY_FORMS})\\.?\\s+(?=\\S)`, 'iu');
+const COMPANY_SUFFIX = new RegExp(String.raw`[\s,]+(?:${COMPANY_FORMS})\.?$`, 'iu');
+const COMPANY_PREFIX = new RegExp(String.raw`^(?:${COMPANY_FORMS})\.?\s+(?=\S)`, 'iu');
+
+/** Wrapping punctuation, and the trailing punctuation, to trim off a candidate. */
+const WRAPPING = '"\'«»()[]';
+const TRAILING = ' .,;:—-';
+
+/**
+ * Two brands in one field: `Total/Rubis`, `Avia + Elan`, `Shell & Cie`.
+ *
+ * Whitespace is collapsed before this is applied, so ` & ` is a literal and the
+ * pattern carries no quantifier — `\s+&\s+` would backtrack quadratically on a
+ * run of spaces, and this function is exported, so any string can reach it.
+ */
+const SHARED_FORECOURT = /[/+]|(?: & )/u;
 
 /** Longest brand the SDK accepts; past that it is a sentence, not a name. */
 const MAX_LENGTH = 40;
+
+/**
+ * Longest value worth cleaning at all. Nothing downstream can produce a brand
+ * from more than {@link MAX_LENGTH} characters, so this only has to be generous
+ * enough to leave the decoration room — and it bounds every pattern below.
+ */
+const MAX_RAW_LENGTH = 8 * MAX_LENGTH;
 
 /**
  * One canonical brand, or `null` when `raw` holds no brand at all.
@@ -170,13 +190,18 @@ const MAX_LENGTH = 40;
 export function sanitizeBrand(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
 
-  // `Total/Rubis` and `Avia + Elan` are two brands in one field. The first that
-  // resolves to a known network wins; the whole value is not one brand anyway.
-  const parts = raw.split(/[/+]|(?:\s+&\s+)/u);
+  // Collapsed once, up front: it bounds the length before any pattern runs, and
+  // it turns the separator below into a literal.
+  const flat = collapse(raw);
+  if (flat.length > MAX_RAW_LENGTH) return null;
+
+  // The first part that resolves to a known network wins; a shared forecourt is
+  // not one brand anyway.
+  const parts = flat.split(SHARED_FORECOURT);
   const cleaned: string[] = [];
 
   for (const part of parts) {
-    const collapsed = collapse(part);
+    const collapsed = trimChars(part.trim(), WRAPPING);
     // Matched before the rules below, so single-letter networks survive them:
     // `U` is how OSM spells a good share of the Système U stations.
     const known = network(collapsed);
@@ -221,17 +246,12 @@ export function toBrandKey(brand: string): string {
   return toLookupKey(sanitizeBrand(brand) ?? brand);
 }
 
-/** Whitespace, control characters and wrapping punctuation only. */
+/** Whitespace and control characters only; both reach us from OSM. */
 function collapse(raw: string): string {
-  return (
-    raw
-      // Control characters and non-breaking spaces both reach us from OSM.
-      .replace(/[\p{Cc}\p{Cf}]+/gu, ' ')
-      .replace(/\s+/gu, ' ')
-      .trim()
-      .replace(/^["'«»([]+|["'«»)\]]+$/gu, '')
-      .trim()
-  );
+  return raw
+    .replace(/[\p{Cc}\p{Cf}]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
 }
 
 /** Trims the decoration off one collapsed candidate, or rejects it outright. */
@@ -240,8 +260,7 @@ function strip(collapsed: string): string | null {
   // rather than trimmed down to a `service` nobody recognises.
   if (NOT_A_BRAND.has(toLookupKey(collapsed))) return null;
 
-  const text = collapsed
-    .replace(/[\s.,;:—-]+$/u, '')
+  const text = trimTrailing(collapsed, TRAILING)
     .replace(COMPANY_SUFFIX, '')
     .replace(COMPANY_PREFIX, '')
     .replace(NOISE_PREFIX, '')
